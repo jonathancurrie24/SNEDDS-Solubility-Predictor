@@ -1,5 +1,5 @@
-streamlit==1.40.1
-numpy==2.4.4
-pandas==2.2.3
-matplotlib==3.10.8
+streamlit>=1.40,<2
+numpy>=1.26,<2.2
+pandas>=2.1,<2.3
+matplotlib>=3.8,<3.10
 mpltern==1.0.4

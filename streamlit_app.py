@@ -1,5 +1,5 @@
 """
-Streamlit app for Mixture Studio - constrained-mixture DOE and Scheffe modeling.
+Streamlit app for SNEDDS Solubility Prediction App - constrained-mixture DOE and Scheffe modeling.
 
 Install: pip install streamlit numpy matplotlib mpltern pandas
 Run:     streamlit run streamlit_app.py
@@ -230,7 +230,7 @@ def plot_ternary(constraints, design_pts=None, fit_result=None,
 
     fig = plt.figure(figsize=(8, 7))
     ax = fig.add_subplot(111, projection="ternary")
-    _style_ternary_axes(ax, constraints.names, drug or "Mixture Studio", title_color)
+    _style_ternary_axes(ax, constraints.names, drug or "SNEDDS Solubility Prediction", title_color)
 
     verts = constraints.vertices()
 
@@ -331,7 +331,7 @@ def plot_ternary(constraints, design_pts=None, fit_result=None,
 # ============================================================================
 # PAGE LAYOUT
 # ============================================================================
-st.markdown("## △ Mixture Studio")
+st.markdown("## △ SNEDDS Solubility Prediction App")
 st.markdown("Design, sample, and model a three-component formulation space.")
 
 # ---- Top-of-page mode toggle ---------------------------------------------

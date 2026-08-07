@@ -1,5 +1,5 @@
 """
-Streamlit app for Mixture Studio - constrained-mixture DOE and Scheffe modeling.
+Streamlit app for SNEDDS Solubility Predictor - constrained-mixture DOE and Scheffe modeling.
 
 Install: pip install streamlit numpy matplotlib mpltern pandas
 Run:     streamlit run streamlit_app.py

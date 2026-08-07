@@ -33,8 +33,8 @@ st.set_page_config(
 
 _DEFAULTS = {
     "comp_names": ["Oil", "Surfactant", "Co-Surfactant"],
-    "comp_mins":  [10.0, 10.0, 20.0],
-    "comp_maxs":  [60.0, 40.0, 50.0],
+    "comp_mins":  [20.0, 20.0, 20.0],
+    "comp_maxs":  [70.0, 70.0, 70.0],
     "budget": 6,
     "design_points": [],
     "solubilities": [],

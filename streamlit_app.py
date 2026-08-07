@@ -25,7 +25,7 @@ from mixture_doe import (
 # PAGE CONFIG & SESSION STATE
 # ============================================================================
 st.set_page_config(
-    page_title="Mixture Studio",
+    page_title="SNEDDS Solubility Predictor App",
     page_icon="△",
     layout="wide",
     initial_sidebar_state="collapsed",

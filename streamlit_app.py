@@ -1,5 +1,5 @@
 """
-Streamlit app for SNEDDS Solubility Prediction App - constrained-mixture DOE and Scheffe modeling.
+Streamlit app for Mixture Studio - constrained-mixture DOE and Scheffe modeling.
 
 Install: pip install streamlit numpy matplotlib mpltern pandas
 Run:     streamlit run streamlit_app.py
@@ -25,7 +25,7 @@ from mixture_doe import (
 # PAGE CONFIG & SESSION STATE
 # ============================================================================
 st.set_page_config(
-    page_title="SNEDDS Solubility Prediction App",
+    page_title="Mixture Studio",
     page_icon="△",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -229,8 +229,13 @@ def plot_ternary(constraints, design_pts=None, fit_result=None,
         return None
 
     fig = plt.figure(figsize=(8, 7))
-    ax = fig.add_subplot(111, projection="ternary")
-    _style_ternary_axes(ax, constraints.names, drug or "SNEDDS Solubility Prediction", title_color)
+    # ternary_sum=100 is the key fix: without it mpltern defaults to a 0-1
+    # coordinate range and MultipleLocator(10) produces zero in-range ticks,
+    # so no tick marks, no numeric labels, and no grid ever draw. Data is
+    # still positioned by ratio, which is why the heatmap and markers looked
+    # right while everything else was blank.
+    ax = fig.add_subplot(111, projection="ternary", ternary_sum=100.0)
+    _style_ternary_axes(ax, constraints.names, drug or "Mixture Studio", title_color)
 
     verts = constraints.vertices()
 
@@ -331,7 +336,7 @@ def plot_ternary(constraints, design_pts=None, fit_result=None,
 # ============================================================================
 # PAGE LAYOUT
 # ============================================================================
-st.markdown("## △ SNEDDS Solubility Prediction App")
+st.markdown("## △ Mixture Studio")
 st.markdown("Design, sample, and model a three-component formulation space.")
 
 # ---- Top-of-page mode toggle ---------------------------------------------
@@ -407,29 +412,19 @@ with col_left:
                 help=f"Model supports up to {MAX_SINGLE_COMPONENT:.0f}%",
             )
 
-            # Per-component bound status. Shows only when a bound is *at* or
-            # *outside* the model range, so the user can tell whether they've
-            # deliberately pushed to the edge or stepped over it.
+            # Per-component bound status. Only shown when a bound is
+            # genuinely OUTSIDE the model range (< 10% or > 80%). At-the-edge
+            # values are a valid choice and get no caption.
             lo, hi = st.session_state.comp_mins[idx], st.session_state.comp_maxs[idx]
             if lo < MIN_SINGLE_COMPONENT:
                 st.caption(
                     f":red[⚠ min {lo:.0f}% is below the model floor "
                     f"({MIN_SINGLE_COMPONENT:.0f}%)]"
                 )
-            elif lo == MIN_SINGLE_COMPONENT:
-                st.caption(
-                    f":orange[⚑ min set at model floor "
-                    f"({MIN_SINGLE_COMPONENT:.0f}%) — your choice]"
-                )
             if hi > MAX_SINGLE_COMPONENT:
                 st.caption(
                     f":red[⚠ max {hi:.0f}% is above the model ceiling "
                     f"({MAX_SINGLE_COMPONENT:.0f}%)]"
-                )
-            elif hi == MAX_SINGLE_COMPONENT:
-                st.caption(
-                    f":orange[⚑ max set at model ceiling "
-                    f"({MAX_SINGLE_COMPONENT:.0f}%) — your choice]"
                 )
 
     # ---- Model-range violation banner (only when actually violated) ------

@@ -25,7 +25,7 @@ from mixture_doe import (
 # PAGE CONFIG & SESSION STATE
 # ============================================================================
 st.set_page_config(
-    page_title="SNEDDS Solubility Prediction App",
+    page_title="Mixture Studio",
     page_icon="△",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -96,12 +96,9 @@ def _order_vertices_by_dominant_component(verts):
 
 def _style_ternary_axes(ax, names, drug, title_color):
     """House-style formatting: tick2 positions, dashed grid, black spines."""
-    ax.taxis.set_ticks_position("tick2")
-    ax.laxis.set_ticks_position("tick2")
-    ax.raxis.set_ticks_position("tick2")
-    ax.taxis.set_label_position("tick2")
-    ax.laxis.set_label_position("tick2")
-    ax.raxis.set_label_position("tick2")
+    for axis_name in ("taxis", "laxis", "raxis"):
+        getattr(ax, axis_name).set_ticks_position("tick2")
+        getattr(ax, axis_name).set_label_position("tick2")
 
     for axis in (ax.taxis, ax.laxis, ax.raxis):
         axis.set_major_locator(MultipleLocator(10.0))
@@ -115,17 +112,19 @@ def _style_ternary_axes(ax, names, drug, title_color):
         ax.tick_params(axis=which_axis, which="minor",
                        direction="out", length=3, width=0.8, colors="black")
 
-    # The `zorder=` kwarg to ax.grid() is silently ignored by matplotlib on
-    # most backends — the reliable knob is set_axisbelow(False), which forces
-    # the axes' own grid to draw ON TOP of artists like tripcolor. And
-    # which="both" is required to render the minor gridlines from the 5%
-    # MinorLocator; without it only the 10% majors ever appear.
+    # matplotlib's ax.grid(axis=...) only accepts 'x', 'y', or 'both' — the
+    # ternary axis names 't','l','r' silently no-op there. Call grid() on each
+    # ternary axis object directly instead; those are real Axis instances and
+    # their grid() respects which='major'/'minor' plus styling kwargs. Pass
+    # visible=True explicitly so the second (minor) call can't toggle the
+    # major grid back off.
+    for axis in (ax.taxis, ax.laxis, ax.raxis):
+        axis.grid(visible=True, which="major",
+                  linestyle="--", linewidth=0.8, color="gray", alpha=0.7)
+        axis.grid(visible=True, which="minor",
+                  linestyle=":", linewidth=0.5, color="gray", alpha=0.4)
+    # Force the grid to sit above the tripcolor surface.
     ax.set_axisbelow(False)
-    for which_axis in ("t", "l", "r"):
-        ax.grid(axis=which_axis, which="major",
-                linestyle="--", linewidth=0.8, color="gray", alpha=0.7)
-        ax.grid(axis=which_axis, which="minor",
-                linestyle=":", linewidth=0.5, color="gray", alpha=0.4)
 
     ax.set_tlabel(f"% w/w {names['c1']}")
     ax.set_llabel(f"% w/w {names['c3']}")
@@ -255,7 +254,20 @@ def plot_ternary(constraints, design_pts=None, fit_result=None,
             tri = ax.tripcolor(
                 grid_pts[:, 0], grid_pts[:, 2], grid_pts[:, 1], preds,
                 cmap="viridis", shading="gouraud",
+                zorder=1,
             )
+            # Iso-solubility contour lines on top of the viridis fill. Wrapped
+            # in try/except because on very small feasible regions the
+            # triangulation can degenerate and tricontour will raise.
+            try:
+                cs = ax.tricontour(
+                    grid_pts[:, 0], grid_pts[:, 2], grid_pts[:, 1], preds,
+                    levels=8, colors="white", linewidths=0.8, alpha=0.85,
+                    zorder=2,
+                )
+                ax.clabel(cs, inline=True, fontsize=8, fmt="%.1f")
+            except (ValueError, RuntimeError):
+                pass
             cbar = plt.colorbar(tri, ax=ax, fraction=0.046, pad=0.1)
             cbar.set_label("Predicted solubility (mg/mL)", rotation=270, labelpad=20)
 
@@ -395,19 +407,29 @@ with col_left:
                 help=f"Model supports up to {MAX_SINGLE_COMPONENT:.0f}%",
             )
 
-            # Per-component bound status. Only flag bounds that fall STRICTLY
-            # outside the model range — sitting exactly at 10% or 80% is a
-            # legitimate choice, not something to warn about.
+            # Per-component bound status. Shows only when a bound is *at* or
+            # *outside* the model range, so the user can tell whether they've
+            # deliberately pushed to the edge or stepped over it.
             lo, hi = st.session_state.comp_mins[idx], st.session_state.comp_maxs[idx]
             if lo < MIN_SINGLE_COMPONENT:
                 st.caption(
                     f":red[⚠ min {lo:.0f}% is below the model floor "
                     f"({MIN_SINGLE_COMPONENT:.0f}%)]"
                 )
+            elif lo == MIN_SINGLE_COMPONENT:
+                st.caption(
+                    f":orange[⚑ min set at model floor "
+                    f"({MIN_SINGLE_COMPONENT:.0f}%) — your choice]"
+                )
             if hi > MAX_SINGLE_COMPONENT:
                 st.caption(
                     f":red[⚠ max {hi:.0f}% is above the model ceiling "
                     f"({MAX_SINGLE_COMPONENT:.0f}%)]"
+                )
+            elif hi == MAX_SINGLE_COMPONENT:
+                st.caption(
+                    f":orange[⚑ max set at model ceiling "
+                    f"({MAX_SINGLE_COMPONENT:.0f}%) — your choice]"
                 )
 
     # ---- Model-range violation banner (only when actually violated) ------

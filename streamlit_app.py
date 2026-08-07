@@ -25,14 +25,14 @@ from mixture_doe import (
 # PAGE CONFIG & SESSION STATE
 # ============================================================================
 st.set_page_config(
-    page_title="SNEDDS Solubility Prediction App",
+    page_title="Mixture Studio",
     page_icon="△",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
 
 _DEFAULTS = {
-    "comp_names": ["Captex 300", "Kolliphor RH40", "Capmul MCM C8"],
+    "comp_names": ["Oil", "Surfactant", "Co-Surfactant"],
     "comp_mins":  [30.0, 10.0, 20.0],
     "comp_maxs":  [60.0, 40.0, 50.0],
     "budget": 6,
@@ -52,11 +52,10 @@ for k, v in _DEFAULTS.items():
 # ============================================================================
 # HELPERS
 # ============================================================================
-# Hard formulation limit: no single component may exceed this fraction.
-# Surfaced in three places so the constraint is impossible to miss:
-#   1. The number_input max_value below, so the user physically can't type past it.
-#   2. Passed to MixtureConstraints as hard_max so the feasibility report flags it.
-#   3. Drawn as a dashed guide line on the ternary plot.
+# Model-supported range per single component. Bounds outside this range are
+# not physically prevented — the user may set them anywhere in 0-100 — but
+# the app warns clearly and the feasibility report flags them as violations.
+MIN_SINGLE_COMPONENT = 10.0
 MAX_SINGLE_COMPONENT = 80.0
 
 
@@ -72,6 +71,7 @@ def get_constraints() -> MixtureConstraints:
             "c2": st.session_state.comp_names[1],
             "c3": st.session_state.comp_names[2],
         },
+        hard_min=MIN_SINGLE_COMPONENT,
         hard_max=MAX_SINGLE_COMPONENT,
     )
 
@@ -107,9 +107,12 @@ def _style_ternary_axes(ax, names, drug, title_color):
         axis.set_major_locator(MultipleLocator(10.0))
         axis.set_minor_locator(MultipleLocator(5.0))
 
-    ax.grid(axis="t", linestyle="--", alpha=0.6, color="gray")
-    ax.grid(axis="l", linestyle="--", alpha=0.6, color="gray")
-    ax.grid(axis="r", linestyle="--", alpha=0.6, color="gray")
+    # zorder above the heatmap (default ~2) but below design points (5) so the
+    # grid stays visible over the coloured surface. Without this, tripcolor
+    # covers the grid completely.
+    ax.grid(axis="t", linestyle="--", alpha=0.6, color="gray", zorder=2.5)
+    ax.grid(axis="l", linestyle="--", alpha=0.6, color="gray", zorder=2.5)
+    ax.grid(axis="r", linestyle="--", alpha=0.6, color="gray", zorder=2.5)
 
     ax.set_tlabel(f"% w/w {names['c1']}")
     ax.set_llabel(f"% w/w {names['c3']}")
@@ -120,20 +123,6 @@ def _style_ternary_axes(ax, names, drug, title_color):
     for side in ("tside", "lside", "rside"):
         ax.spines[side].set_color("black")
         ax.spines[side].set_linewidth(2)
-
-
-def _full_simplex_grid(step: float = 2.0) -> np.ndarray:
-    """
-    (N,3) array covering the entire ternary at the given step.
-    Used for the apex-mode prediction surface, which extrapolates the
-    linear model beyond the feasible region on purpose.
-    """
-    pts = []
-    n = int(round(100.0 / step))
-    for i in range(n + 1):
-        for j in range(n + 1 - i):
-            pts.append((i * step, j * step, 100.0 - i * step - j * step))
-    return np.array(pts, dtype=float)
 
 
 def plot_parity(observed, fitted, loo=None, color="#1f77b4", drug=""):
@@ -217,8 +206,9 @@ def plot_ternary(constraints, design_pts=None, fit_result=None,
                  drug="", title_color="#1f77b4", apex_mode=False):
     """
     Standard mode: feasible outline + heatmap restricted to the feasible region.
-    Apex mode:     heatmap across the FULL simplex from the three vertex
-                   readings + feasible-triangle outline + vertex value labels.
+    Apex mode:     heatmap over the feasible region built from the three
+                   vertex readings (no extrapolation beyond the design box)
+                   + feasible-triangle outline + vertex value labels.
     """
     try:
         import mpltern  # noqa: F401  (registers the 'ternary' projection)
@@ -232,29 +222,6 @@ def plot_ternary(constraints, design_pts=None, fit_result=None,
 
     verts = constraints.vertices()
 
-    # -- hard-cap guide lines (80% max per component) ----------------------
-    # Each line is where one component equals the cap; the other two split
-    # the remaining 20% between them. Drawn thin and dashed so they read as
-    # a *limit* rather than as data, and always visible so the constraint is
-    # obvious even before the user tightens their bounds against it.
-    cap = getattr(constraints, "hard_max", None)
-    if cap is not None and 0 < cap < constraints.total:
-        rem = constraints.total - cap
-        cap_lines = {
-            "c1": [(cap, rem, 0.0), (cap, 0.0, rem)],
-            "c2": [(rem, cap, 0.0), (0.0, cap, rem)],
-            "c3": [(rem, 0.0, cap), (0.0, rem, cap)],
-        }
-        cap_label_used = False
-        for k, (a, b) in cap_lines.items():
-            ax.plot(
-                [a[0], b[0]], [a[2], b[2]], [a[1], b[1]],
-                linestyle="--", color="#c0392b", linewidth=1.2, alpha=0.7,
-                zorder=2,
-                label=None if cap_label_used else f"{cap:.0f}% cap",
-            )
-            cap_label_used = True
-
     # -- prediction surface -------------------------------------------------
     if fit_result is not None:
         coef_dict = fit_result["coef"]
@@ -262,8 +229,11 @@ def plot_ternary(constraints, design_pts=None, fit_result=None,
         deg = fit_result["degree"]
 
         if deg == "apex":
-            grid_pts = _full_simplex_grid(step=2.0)
-            preds = (grid_pts / 100.0) @ coef
+            # Same feasible-region grid as the regular fit: no extrapolation.
+            # The linear Scheffe surface is still (x/100) @ betas, but only
+            # evaluated inside the design polygon.
+            grid_pts = feasible_grid(constraints, step=2.0)
+            preds = (grid_pts / 100.0) @ coef if len(grid_pts) else np.array([])
         else:
             grid_pts = feasible_grid(constraints, step=2.0)
             preds = _scheffe_expand(grid_pts, deg) @ coef if len(grid_pts) else np.array([])
@@ -328,16 +298,16 @@ with mode_col1:
         help=(
             "Uses the 3 vertices of the feasible region as pseudo-components. "
             "Coefficients are read directly from the observations at those "
-            "vertices, and the linear Scheffe surface is extrapolated across "
-            "the full simplex. Requires the feasible region to be an "
-            "equilateral triangle."
+            "vertices. The linear Scheffe surface is shown across the feasible "
+            "region only (no extrapolation beyond the design box). Requires "
+            "the feasible region to be an equilateral triangle."
         ),
     )
 with mode_col2:
     if st.session_state.apex_mode:
         st.caption(
             "Apex mode active: the design is the 3 vertices, the fit is the "
-            "linear Scheffe read-off, and the plot covers the full simplex."
+            "linear Scheffe read-off, and the plot covers the feasible region."
         )
 
 # ---- Detect config changes that should invalidate stale state ------------
@@ -363,16 +333,11 @@ col_left, col_right = st.columns([1.6, 1], gap="large")
 with col_left:
     # ---- Step 1: Components & Constraints ----
     st.subheader("1. Components & constraints")
-    st.warning(
-        f"**Model limit: no single component may exceed "
-        f"{MAX_SINGLE_COMPONENT:.0f}%.** Max inputs are capped at this value."
+    st.caption(
+        "The three components below fill 100% of the formulation. Any "
+        "**co-solvent** (e.g. ethanol, PG) must be held at the **same "
+        "proportion across every run** — it isn't part of the mixture design."
     )
-
-    # Clamp any stored max above the hard cap (e.g. from an old session or
-    # an imported CSV) so the sliders/inputs never present an illegal state.
-    for i in range(3):
-        if st.session_state.comp_maxs[i] > MAX_SINGLE_COMPONENT:
-            st.session_state.comp_maxs[i] = MAX_SINGLE_COMPONENT
 
     c1_col, c2_col, c3_col = st.columns(3)
     for idx, col in enumerate((c1_col, c2_col, c3_col)):
@@ -385,16 +350,62 @@ with col_left:
             st.session_state.comp_mins[idx] = st.number_input(
                 f"C{idx+1} min (%)",
                 value=float(st.session_state.comp_mins[idx]),
-                min_value=0.0, max_value=MAX_SINGLE_COMPONENT, step=1.0,
+                min_value=0.0, max_value=100.0, step=1.0,
                 key=f"min_{idx}",
+                help=f"Model supports {MIN_SINGLE_COMPONENT:.0f}% and above",
             )
             st.session_state.comp_maxs[idx] = st.number_input(
                 f"C{idx+1} max (%)",
                 value=float(st.session_state.comp_maxs[idx]),
-                min_value=0.0, max_value=MAX_SINGLE_COMPONENT, step=1.0,
+                min_value=0.0, max_value=100.0, step=1.0,
                 key=f"max_{idx}",
-                help=f"Hard cap: {MAX_SINGLE_COMPONENT:.0f}%",
+                help=f"Model supports up to {MAX_SINGLE_COMPONENT:.0f}%",
             )
+
+            # Per-component bound status. Shows only when a bound is *at* or
+            # *outside* the model range, so the user can tell whether they've
+            # deliberately pushed to the edge or stepped over it.
+            lo, hi = st.session_state.comp_mins[idx], st.session_state.comp_maxs[idx]
+            if lo < MIN_SINGLE_COMPONENT:
+                st.caption(
+                    f":red[⚠ min {lo:.0f}% is below the model floor "
+                    f"({MIN_SINGLE_COMPONENT:.0f}%)]"
+                )
+            elif lo == MIN_SINGLE_COMPONENT:
+                st.caption(
+                    f":orange[⚑ min set at model floor "
+                    f"({MIN_SINGLE_COMPONENT:.0f}%) — your choice]"
+                )
+            if hi > MAX_SINGLE_COMPONENT:
+                st.caption(
+                    f":red[⚠ max {hi:.0f}% is above the model ceiling "
+                    f"({MAX_SINGLE_COMPONENT:.0f}%)]"
+                )
+            elif hi == MAX_SINGLE_COMPONENT:
+                st.caption(
+                    f":orange[⚑ max set at model ceiling "
+                    f"({MAX_SINGLE_COMPONENT:.0f}%) — your choice]"
+                )
+
+    # ---- Model-range violation banner (only when actually violated) ------
+    range_violations = []
+    for i, nm in enumerate(st.session_state.comp_names):
+        lo = st.session_state.comp_mins[i]
+        hi = st.session_state.comp_maxs[i]
+        if lo < MIN_SINGLE_COMPONENT:
+            range_violations.append(
+                f"**{nm}** min is {lo:.0f}% (model floor: {MIN_SINGLE_COMPONENT:.0f}%)"
+            )
+        if hi > MAX_SINGLE_COMPONENT:
+            range_violations.append(
+                f"**{nm}** max is {hi:.0f}% (model ceiling: {MAX_SINGLE_COMPONENT:.0f}%)"
+            )
+    if range_violations:
+        st.warning(
+            f"Model is validated for {MIN_SINGLE_COMPONENT:.0f}%–"
+            f"{MAX_SINGLE_COMPONENT:.0f}% per component. Some bounds are "
+            f"outside this range:\n\n" + "\n".join(f"- {v}" for v in range_violations)
+        )
 
     dcol1, dcol2 = st.columns([2, 1])
     with dcol1:
@@ -825,45 +836,24 @@ with col_right:
         st.info("Plot will appear here once mpltern is installed / design points are placed.")
 
 # ---------------------------------------------------------------------------
-# EXPORT / IMPORT
+# EXPORT
 # ---------------------------------------------------------------------------
 st.divider()
-col_exp, col_imp = st.columns(2)
-
-with col_exp:
-    st.subheader("Export data")
-    if st.session_state.design_points and st.session_state.solubilities:
-        export_df = pd.DataFrame(
-            {
-                st.session_state.comp_names[0]: [p[0] for p in st.session_state.design_points],
-                st.session_state.comp_names[1]: [p[1] for p in st.session_state.design_points],
-                st.session_state.comp_names[2]: [p[2] for p in st.session_state.design_points],
-                "Solubility (mg/mL)": st.session_state.solubilities,
-            }
-        )
-        st.download_button(
-            "Download as CSV",
-            data=export_df.to_csv(index=False),
-            file_name="mixture_data.csv",
-            mime="text/csv",
-        )
-    else:
-        st.info("No data to export yet.")
-
-with col_imp:
-    st.subheader("Import data")
-    uploaded = st.file_uploader(
-        "Upload CSV: first 3 columns are components, last column is solubility."
+st.subheader("Export data")
+if st.session_state.design_points and st.session_state.solubilities:
+    export_df = pd.DataFrame(
+        {
+            st.session_state.comp_names[0]: [p[0] for p in st.session_state.design_points],
+            st.session_state.comp_names[1]: [p[1] for p in st.session_state.design_points],
+            st.session_state.comp_names[2]: [p[2] for p in st.session_state.design_points],
+            "Solubility (mg/mL)": st.session_state.solubilities,
+        }
     )
-    if uploaded is not None:
-        try:
-            df = pd.read_csv(uploaded)
-            comp_cols = df.columns[:3].tolist()
-            sol_col = df.columns[-1]
-            st.session_state.comp_names = comp_cols
-            st.session_state.design_points = [tuple(map(float, p)) for p in df[comp_cols].values]
-            st.session_state.solubilities = [float(x) for x in df[sol_col].tolist()]
-            st.session_state.fit_result = None
-            st.success("Data imported. Adjust names and constraints above if needed.")
-        except Exception as e:
-            st.error(f"Import failed: {e}")
+    st.download_button(
+        "Download as CSV",
+        data=export_df.to_csv(index=False),
+        file_name="mixture_data.csv",
+        mime="text/csv",
+    )
+else:
+    st.info("No data to export yet.")

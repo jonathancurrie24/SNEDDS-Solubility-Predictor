@@ -25,7 +25,7 @@ from mixture_doe import (
 # PAGE CONFIG & SESSION STATE
 # ============================================================================
 st.set_page_config(
-    page_title="SNEDDS Solubility Predictor App",
+    page_title="Mixture Studio",
     page_icon="△",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -33,8 +33,8 @@ st.set_page_config(
 
 _DEFAULTS = {
     "comp_names": ["Oil", "Surfactant", "Co-Surfactant"],
-    "comp_mins":  [20.0, 20.0, 20.0],
-    "comp_maxs":  [60.0, 60.0, 60.0],
+    "comp_mins":  [30.0, 10.0, 20.0],
+    "comp_maxs":  [60.0, 40.0, 50.0],
     "budget": 6,
     "design_points": [],
     "solubilities": [],
@@ -107,12 +107,25 @@ def _style_ternary_axes(ax, names, drug, title_color):
         axis.set_major_locator(MultipleLocator(10.0))
         axis.set_minor_locator(MultipleLocator(5.0))
 
-    # zorder above the heatmap (default ~2) but below design points (5) so the
-    # grid stays visible over the coloured surface. Without this, tripcolor
-    # covers the grid completely.
-    ax.grid(axis="t", linestyle="--", alpha=0.6, color="gray", zorder=2.5)
-    ax.grid(axis="l", linestyle="--", alpha=0.6, color="gray", zorder=2.5)
-    ax.grid(axis="r", linestyle="--", alpha=0.6, color="gray", zorder=2.5)
+    # Make the tick marks themselves actually visible. Without this, mpltern
+    # draws the tick locations but the marks have effectively zero length.
+    for which_axis in ("t", "l", "r"):
+        ax.tick_params(axis=which_axis, which="major",
+                       direction="out", length=6, width=1.2, colors="black")
+        ax.tick_params(axis=which_axis, which="minor",
+                       direction="out", length=3, width=0.8, colors="black")
+
+    # The `zorder=` kwarg to ax.grid() is silently ignored by matplotlib on
+    # most backends — the reliable knob is set_axisbelow(False), which forces
+    # the axes' own grid to draw ON TOP of artists like tripcolor. And
+    # which="both" is required to render the minor gridlines from the 5%
+    # MinorLocator; without it only the 10% majors ever appear.
+    ax.set_axisbelow(False)
+    for which_axis in ("t", "l", "r"):
+        ax.grid(axis=which_axis, which="major",
+                linestyle="--", linewidth=0.8, color="gray", alpha=0.7)
+        ax.grid(axis=which_axis, which="minor",
+                linestyle=":", linewidth=0.5, color="gray", alpha=0.4)
 
     ax.set_tlabel(f"% w/w {names['c1']}")
     ax.set_llabel(f"% w/w {names['c3']}")
@@ -270,13 +283,33 @@ def plot_ternary(constraints, design_pts=None, fit_result=None,
         coef_dict = fit_result["coef"]
         coef = [coef_dict[i] for i in sorted(coef_dict)]
         ordered = _order_vertices_by_dominant_component(verts)
+
+        # Offset each label OUTWARD from the polygon centroid so it doesn't
+        # sit on top of the vertex marker or the neighbouring labels. We
+        # shift each vertex along the (vertex - centroid) direction in
+        # ternary coords by a small amount — mpltern's transform is affine,
+        # so the shifted coords don't need to sum to 100; they just place
+        # the text a bit outside the triangle.
+        centroid = np.mean(ordered, axis=0)
+        # ~5 percentage points of ternary "reach" clears the marker and
+        # the label bbox at this figure size; tune here if you change the
+        # feasible-region size dramatically.
+        SHIFT = 6.0
+
         text_props = dict(
             ha="center", va="center", fontsize=11, fontweight="bold",
             bbox=dict(boxstyle="round,pad=0.3", fc="ivory", ec="black",
-                      lw=1, alpha=0.85),
+                      lw=1, alpha=0.9),
+            zorder=10,
         )
         for v, val in zip(ordered, coef):
-            ax.text(v[0], v[2], v[1], f"{val:.2f}", **text_props)
+            direction = np.array(v) - centroid
+            norm = np.linalg.norm(direction) or 1.0
+            shifted = np.array(v) + SHIFT * direction / norm
+            # mpltern's ax.text takes (t, l, r) which in this file's
+            # convention is (c1, c3, c2).
+            ax.text(shifted[0], shifted[2], shifted[1],
+                    f"{val:.2f}", **text_props)
 
     ax.legend(loc="upper left", fontsize=10)
     plt.tight_layout(rect=[0, 0, 0.9, 1.0])

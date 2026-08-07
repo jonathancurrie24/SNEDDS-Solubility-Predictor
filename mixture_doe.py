@@ -150,6 +150,32 @@ class MixtureConstraints:
         xy = np.array([ternary_to_cartesian(*v) for v in verts])
         return _polygon_area(xy)
 
+    def side_lengths(self) -> List[float]:
+        """
+        Cartesian side lengths of the feasible polygon in the order returned
+        by vertices() (i.e. CCW). Empty list if the region isn't a polygon.
+        """
+        verts = self.vertices()
+        if len(verts) < 3:
+            return []
+        xy = np.array([ternary_to_cartesian(*v) for v in verts])
+        n = len(xy)
+        return [float(np.linalg.norm(xy[(i + 1) % n] - xy[i])) for i in range(n)]
+
+    def is_equilateral(self, rel_tol: float = 0.02) -> bool:
+        """
+        True iff the feasible region is a triangle with three equal-length
+        sides (within `rel_tol` of the mean side length). This is the
+        precondition for treating the vertices as pseudo-components in an
+        apex-style linear Scheffe prediction.
+        """
+        sides = self.side_lengths()
+        if len(sides) != 3:
+            return False
+        s = np.array(sides)
+        mean = s.mean()
+        return bool(mean > _EPS and (s.max() - s.min()) / mean <= rel_tol)
+
 
 @dataclass
 class FeasibilityReport:
@@ -417,15 +443,20 @@ class ScheffeModel:
             adj_r2 = float("nan")
 
         # Leave-one-out CV — the only trustworthy accuracy signal at small n.
-        loo_err = []
+        # We also keep the per-point LOO predictions so the caller can draw a
+        # parity/residual plot; the summary is the natural place for these.
+        loo_err: List[float] = []
+        loo_preds: List[float] = []
         if n > p:
             for i in range(n):
                 mask = np.arange(n) != i
                 try:
                     m = ScheffeModel(self.degree).fit(X[mask], y[mask])
-                    loo_err.append((y[i] - m.predict(X[i : i + 1])[0]) ** 2)
+                    pi = float(m.predict(X[i : i + 1])[0])
+                    loo_preds.append(pi)
+                    loo_err.append((y[i] - pi) ** 2)
                 except ValueError:
-                    loo_err = []
+                    loo_err, loo_preds = [], []
                     break
         loo_rmse = float(np.sqrt(np.mean(loo_err))) if loo_err else float("nan")
 
@@ -438,6 +469,9 @@ class ScheffeModel:
             "r2": r2,
             "adj_r2": adj_r2,
             "loo_rmse": loo_rmse,
+            "observed": [float(v) for v in y],
+            "fitted_values": [float(v) for v in yhat],
+            "loo_predictions": loo_preds if loo_preds else None,
             "trustworthy": (n - p) >= 2 and not np.isnan(loo_rmse),
             "note": (
                 "Saturated or near-saturated fit: R^2 will look perfect but "

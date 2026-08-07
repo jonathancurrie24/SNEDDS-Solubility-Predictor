@@ -25,7 +25,7 @@ from mixture_doe import (
 # PAGE CONFIG & SESSION STATE
 # ============================================================================
 st.set_page_config(
-    page_title="SNEDDS Solubility Prediction App",
+    page_title="Mixture Studio",
     page_icon="△",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -395,29 +395,19 @@ with col_left:
                 help=f"Model supports up to {MAX_SINGLE_COMPONENT:.0f}%",
             )
 
-            # Per-component bound status. Shows only when a bound is *at* or
-            # *outside* the model range, so the user can tell whether they've
-            # deliberately pushed to the edge or stepped over it.
+            # Per-component bound status. Only flag bounds that fall STRICTLY
+            # outside the model range — sitting exactly at 10% or 80% is a
+            # legitimate choice, not something to warn about.
             lo, hi = st.session_state.comp_mins[idx], st.session_state.comp_maxs[idx]
             if lo < MIN_SINGLE_COMPONENT:
                 st.caption(
                     f":red[⚠ min {lo:.0f}% is below the model floor "
                     f"({MIN_SINGLE_COMPONENT:.0f}%)]"
                 )
-            elif lo == MIN_SINGLE_COMPONENT:
-                st.caption(
-                    f":orange[⚑ min set at model floor "
-                    f"({MIN_SINGLE_COMPONENT:.0f}%) — your choice]"
-                )
             if hi > MAX_SINGLE_COMPONENT:
                 st.caption(
                     f":red[⚠ max {hi:.0f}% is above the model ceiling "
                     f"({MAX_SINGLE_COMPONENT:.0f}%)]"
-                )
-            elif hi == MAX_SINGLE_COMPONENT:
-                st.caption(
-                    f":orange[⚑ max set at model ceiling "
-                    f"({MAX_SINGLE_COMPONENT:.0f}%) — your choice]"
                 )
 
     # ---- Model-range violation banner (only when actually violated) ------

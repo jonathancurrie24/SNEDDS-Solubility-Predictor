@@ -456,7 +456,7 @@ def plot_ternary(constraints, design_pts=None, fit_result=None,
         a, b = verts[i], verts[(i + 1) % n]
         ax.plot(
             [a[0], b[0]], [a[2], b[2]], [a[1], b[1]],
-            color=title_color, linewidth=2.5,
+            color=title_color, linewidth=2.5, linestyle="--",
             label="Feasible region" if i == 0 else None,
             zorder=6,
         )

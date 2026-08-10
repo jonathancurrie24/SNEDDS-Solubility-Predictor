@@ -345,8 +345,8 @@ def plot_parity(observed, fitted,
     # matplotlib doesn't support Axes.spines[...].set(**kwargs) uniformly
     # across versions.
     for side in ("top", "bottom", "left", "right"):
-    ax.spines[side].set_color("black")
-    ax.spines[side].set_linewidth(2.5)
+        ax.spines[side].set_color("black")
+        ax.spines[side].set_linewidth(2.5)
 
     plt.tight_layout()
     return fig

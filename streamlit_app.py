@@ -334,7 +334,7 @@ def plot_parity(observed, fitted,
     ax.set_ylabel("Predicted (mg/g)", fontsize=9)
     ax.tick_params(labelsize=8)
     plot_title = f"{title} — {drug}" if drug else title
-    ax.set_title(plot_title, color=title_color, fontweight="bold", pad=8, fontsize=11)
+    ax.set_title(plot_title, color=color, fontweight="bold", pad=8, fontsize=11)
     ax.grid(True, alpha=0.5)
     ax.legend(loc="lower right" if not have_val else "upper right",
               frameon=True, fontsize=8)

@@ -562,7 +562,7 @@ with col_left:
     st.subheader("1. Components & constraints")
     st.caption(
         "The three components below fill 100% of the formulation. Any "
-        "**co-solvent** (e.g. ethanol, PG) must be held at the **same "
+        "**co-solvent** (e.g. ethanol, Transcutol HP) must be held at the **same "
         "proportion across every run** — it isn't part of the mixture design."
     )
 
@@ -572,10 +572,7 @@ with col_left:
     # make the whole design infeasible and disable Suggest / Fit / Validate.
     st.info(
         f"**Component bounds must be between {MIN_SINGLE_COMPONENT:.0f}% "
-        f"and {MAX_SINGLE_COMPONENT:.0f}%.** The model is not defined "
-        f"outside this range; any bound below "
-        f"{MIN_SINGLE_COMPONENT:.0f}% or above {MAX_SINGLE_COMPONENT:.0f}% "
-        f"will make the design infeasible."
+        f"and {MAX_SINGLE_COMPONENT:.0f}%.**"
     )
 
     # Component inputs are LOCKED once a fit exists, because silently
@@ -609,7 +606,7 @@ with col_left:
                 disabled=inputs_locked,
                 help=(
                     f"Must be at least {MIN_SINGLE_COMPONENT:.0f}%. "
-                    f"Values below the floor make the design infeasible."
+                    f"Values below the lower limit make the design infeasible."
                 ),
             )
             st.session_state.comp_maxs[idx] = st.number_input(
@@ -635,20 +632,20 @@ with col_left:
             if lo < MIN_SINGLE_COMPONENT:
                 notes.append(
                     f":red[min {lo:.0f}% is below the "
-                    f"{MIN_SINGLE_COMPONENT:.0f}% floor]"
+                    f"{MIN_SINGLE_COMPONENT:.0f}% lower limit]"
                 )
             elif lo == MIN_SINGLE_COMPONENT:
                 notes.append(
-                    f":orange[min at the {MIN_SINGLE_COMPONENT:.0f}% floor]"
+                    f":orange[min at the {MIN_SINGLE_COMPONENT:.0f}% limit]"
                 )
             if hi > MAX_SINGLE_COMPONENT:
                 notes.append(
                     f":red[max {hi:.0f}% is above the "
-                    f"{MAX_SINGLE_COMPONENT:.0f}% ceiling]"
+                    f"{MAX_SINGLE_COMPONENT:.0f}% upper limit]"
                 )
             elif hi == MAX_SINGLE_COMPONENT:
                 notes.append(
-                    f":orange[max at the {MAX_SINGLE_COMPONENT:.0f}% ceiling]"
+                    f":orange[max at the {MAX_SINGLE_COMPONENT:.0f}% upper limit]"
                 )
             if not notes and lo <= hi:
                 notes.append(":green[inside allowed range]")

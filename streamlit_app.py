@@ -1,5 +1,6 @@
 """
-Streamlit app for Mixture Studio - constrained-mixture DOE and Scheffe modeling.
+SNEDDS Solubility Prediction App — constrained-mixture DOE and Scheffe
+modeling for self-nanoemulsifying drug delivery systems.
 
 Install: pip install streamlit numpy matplotlib mpltern pandas
 Run:     streamlit run streamlit_app.py
@@ -25,7 +26,7 @@ from mixture_doe import (
 # PAGE CONFIG & SESSION STATE
 # ============================================================================
 st.set_page_config(
-    page_title="Mixture Studio",
+    page_title="SNEDDS Solubility Prediction App",
     page_icon="△",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -43,6 +44,16 @@ _DEFAULTS = {
     "apex_mode": False,
     "drug_name": "Drug",
     "title_color": "#1f77b4",
+    # ---- Ternary plot element toggles (Step "Plot controls") --------------
+    "show_training_points": True,
+    "show_legend": True,
+    "show_apex_labels": True,
+    "show_boundary": True,
+    # ---- Validation points (Step 5) --------------------------------------
+    # Kept separate from design_points/solubilities so they never affect the
+    # fit or the ternary plot — they only feed the validation parity plot.
+    "validation_points": [],
+    "validation_measurements": [],
 }
 for k, v in _DEFAULTS.items():
     if k not in st.session_state:
@@ -93,6 +104,26 @@ def _apex_predict(points: np.ndarray, vertices, readings) -> np.ndarray:
     rhs = np.column_stack([P[:, 0], P[:, 1], np.ones(len(P))])  # (N, 3)
     W = rhs @ np.linalg.inv(A).T                                # (N, 3) weights
     return W @ y                                                # (N,)
+
+
+def predict_from_fit(points, fit_result) -> np.ndarray:
+    """
+    Predict solubility at arbitrary compositions using a stored fit_result.
+
+    Handles both apex mode (barycentric interpolation over the feasible
+    triangle vertices) and Scheffé mode (multiplication of the model matrix
+    by the fitted coefficient vector). Used by the validation-points step to
+    score user-supplied test compositions against the fitted model without
+    ever re-touching the training data.
+    """
+    points = np.atleast_2d(np.asarray(points, dtype=float))
+    if fit_result["degree"] == "apex":
+        V = np.array(fit_result["apex_vertices"], dtype=float)
+        y = np.array(fit_result["apex_readings"], dtype=float)
+        return _apex_predict(points, V, y)
+    coef_dict = fit_result["coef"]
+    coef = np.array([coef_dict[i] for i in sorted(coef_dict)])
+    return _scheffe_expand(points, fit_result["degree"]) @ coef
 
 
 def get_constraints() -> MixtureConstraints:
@@ -173,23 +204,39 @@ def _style_ternary_axes(ax, names, drug, title_color):
         ax.spines[side].set_linewidth(2)
 
 
-def plot_parity(observed, fitted, loo=None, color="#1f77b4", drug=""):
+def plot_parity(observed, fitted, loo=None,
+                val_observed=None, val_predicted=None,
+                color="#1f77b4", drug=""):
     """
     Observed-vs-predicted parity plot.
+
     Open squares: in-sample fitted values (training-time predictions).
     Filled circles: leave-one-out predictions, when available.
+    Red triangles: external validation points (`val_observed` vs
+    `val_predicted`), when provided. Validation predictions come from the
+    fitted model — they are held-out data, not part of the fit — so their
+    scatter around the 1:1 line is the honest generalisation check that
+    LOO-RMSE is trying (with much less data) to approximate.
 
-    A metrics box (MAE, RMSE, R² on the training fit, plus LOO-RMSE when we
-    have it) sits in the upper-left.
+    A metrics box in the upper-left shows in-sample MAE / RMSE / R² (and
+    LOO-RMSE when available); a second box in the lower-right shows the
+    same three metrics computed on the validation set.
     """
     observed = np.asarray(observed, dtype=float)
     fitted = np.asarray(fitted, dtype=float)
     loo_arr = np.asarray(loo, dtype=float) if loo is not None else None
+    val_obs = np.asarray(val_observed, dtype=float) if val_observed is not None else None
+    val_pred = np.asarray(val_predicted, dtype=float) if val_predicted is not None else None
+    have_val = val_obs is not None and val_pred is not None and len(val_obs) > 0
 
     fig, ax = plt.subplots(figsize=(6, 6))
 
-    # square axes around all data
-    stack = [observed, fitted] + ([loo_arr] if loo_arr is not None else [])
+    # square axes around all data (training + LOO + validation)
+    stack = [observed, fitted]
+    if loo_arr is not None:
+        stack.append(loo_arr)
+    if have_val:
+        stack.extend([val_obs, val_pred])
     all_vals = np.concatenate(stack)
     lo, hi = float(all_vals.min()), float(all_vals.max())
     span = hi - lo
@@ -211,6 +258,13 @@ def plot_parity(observed, fitted, loo=None, color="#1f77b4", drug=""):
             s=120, edgecolors="white", linewidths=1.5, zorder=5,
             label="LOO prediction",
         )
+    if have_val:
+        ax.scatter(
+            val_obs, val_pred,
+            marker="^", color="#d62728",
+            s=140, edgecolors="white", linewidths=1.5, zorder=6,
+            label="Validation",
+        )
 
     # in-sample metrics
     resid = observed - fitted
@@ -228,20 +282,42 @@ def plot_parity(observed, fitted, loo=None, color="#1f77b4", drug=""):
     ax.text(
         0.05, 0.95, "\n".join(lines),
         transform=ax.transAxes, fontsize=11, family="monospace",
-        verticalalignment="top", bbox=props, zorder=6,
+        verticalalignment="top", bbox=props, zorder=7,
     )
+
+    # validation metrics (separate box so it's obvious which set they came from)
+    if have_val:
+        v_resid = val_obs - val_pred
+        v_mae = float(np.mean(np.abs(v_resid)))
+        v_rmse = float(np.sqrt(np.mean(v_resid ** 2)))
+        v_ss_tot = float(np.sum((val_obs - val_obs.mean()) ** 2))
+        v_r2 = 1.0 - float(np.sum(v_resid ** 2)) / v_ss_tot if v_ss_tot > 0 else float("nan")
+        v_lines = [
+            f"Val n = {len(val_obs)}",
+            f"MAE   {v_mae:.2f}",
+            f"RMSE  {v_rmse:.2f}",
+            f"R²    {v_r2:.3f}" if np.isfinite(v_r2) else "R²    n/a",
+        ]
+        v_props = dict(boxstyle="round", facecolor="#fff5f5", alpha=0.9, edgecolor="#d62728")
+        ax.text(
+            0.95, 0.05, "\n".join(v_lines),
+            transform=ax.transAxes, fontsize=11, family="monospace",
+            verticalalignment="bottom", horizontalalignment="right",
+            bbox=v_props, zorder=7,
+        )
 
     ax.set_xlim(limits)
     ax.set_ylim(limits)
     ax.set_aspect("equal", adjustable="box")
-    ax.set_xlabel("Observed (mg/mL)")
-    ax.set_ylabel("Predicted (mg/mL)")
+    ax.set_xlabel("Observed (mg/g)")
+    ax.set_ylabel("Predicted (mg/g)")
     ax.set_title(
         f"{drug} — parity" if drug else "Parity",
         color=color, fontweight="bold", pad=10,
     )
     ax.grid(True, linestyle="--", alpha=0.5)
-    ax.legend(loc="lower right", frameon=True)
+    ax.legend(loc="lower right" if not have_val else "upper right",
+              frameon=True, fontsize=9)
     for side in ("top", "bottom", "left", "right"):
         ax.spines[side].set_color("black")
         ax.spines[side].set_linewidth(1.5)
@@ -251,12 +327,18 @@ def plot_parity(observed, fitted, loo=None, color="#1f77b4", drug=""):
 
 
 def plot_ternary(constraints, design_pts=None, fit_result=None,
-                 drug="", title_color="#1f77b4", apex_mode=False):
+                 drug="", title_color="#1f77b4", apex_mode=False,
+                 show_training_points=True, show_legend=True,
+                 show_apex_labels=True, show_boundary=True):
     """
     Standard mode: feasible outline + heatmap restricted to the feasible region.
     Apex mode:     heatmap over the feasible region built from the three
                    vertex readings (no extrapolation beyond the design box)
                    + feasible-triangle outline + vertex value labels.
+
+    The four `show_*` flags are the user-facing plot toggles: hide the
+    training-point markers, the legend, the apex value annotations, or the
+    feasible-region boundary line without touching the underlying data.
     """
     try:
         import mpltern  # noqa: F401  (registers the 'ternary' projection)
@@ -271,7 +353,7 @@ def plot_ternary(constraints, design_pts=None, fit_result=None,
     # still positioned by ratio, which is why the heatmap and markers looked
     # right while everything else was blank.
     ax = fig.add_subplot(111, projection="ternary", ternary_sum=100.0)
-    _style_ternary_axes(ax, constraints.names, drug or "Mixture Studio", title_color)
+    _style_ternary_axes(ax, constraints.names, drug or "SNEDDS Solubility Prediction App", title_color)
 
     verts = constraints.vertices()
 
@@ -320,10 +402,10 @@ def plot_ternary(constraints, design_pts=None, fit_result=None,
             except (ValueError, RuntimeError):
                 pass
             cbar = plt.colorbar(tri, ax=ax, fraction=0.046, pad=0.1)
-            cbar.set_label("Predicted solubility (mg/mL)", rotation=270, labelpad=20)
+            cbar.set_label("Predicted solubility (mg/g)", rotation=270, labelpad=20)
 
     # -- feasible-region boundary (on top of the surface) ------------------
-    if len(verts) >= 3:
+    if show_boundary and len(verts) >= 3:
         loop = verts + [verts[0]]
         t_vals = [p[0] for p in loop]
         l_vals = [p[2] for p in loop]
@@ -333,7 +415,7 @@ def plot_ternary(constraints, design_pts=None, fit_result=None,
                 linewidth=2.5, label="Feasible region")
 
     # -- design points ------------------------------------------------------
-    if design_pts:
+    if show_training_points and design_pts:
         pts_array = np.array(design_pts, dtype=float)
         ax.scatter(
             pts_array[:, 0], pts_array[:, 2], pts_array[:, 1],
@@ -342,7 +424,7 @@ def plot_ternary(constraints, design_pts=None, fit_result=None,
         )
 
     # -- apex-mode vertex annotations --------------------------------------
-    if apex_mode and fit_result is not None and len(verts) == 3:
+    if apex_mode and show_apex_labels and fit_result is not None and len(verts) == 3:
         coef_dict = fit_result["coef"]
         coef = [coef_dict[i] for i in sorted(coef_dict)]
         ordered = _order_vertices_by_dominant_component(verts)
@@ -374,7 +456,12 @@ def plot_ternary(constraints, design_pts=None, fit_result=None,
             ax.text(shifted[0], shifted[2], shifted[1],
                     f"{val:.2f}", **text_props)
 
-    ax.legend(loc="upper left", fontsize=10)
+    if show_legend:
+        # Only render the legend if there's at least one labeled artist,
+        # otherwise matplotlib emits a UserWarning and draws an empty box.
+        handles, labels = ax.get_legend_handles_labels()
+        if handles:
+            ax.legend(loc="upper left", fontsize=10)
     plt.tight_layout(rect=[0, 0, 0.9, 1.0])
     return fig
 
@@ -382,7 +469,7 @@ def plot_ternary(constraints, design_pts=None, fit_result=None,
 # ============================================================================
 # PAGE LAYOUT
 # ============================================================================
-st.markdown("## △ Mixture Studio")
+st.markdown("## △ SNEDDS Solubility Prediction App")
 st.markdown("Design, sample, and model a three-component formulation space.")
 
 # ---- Top-of-page mode toggle ---------------------------------------------
@@ -435,6 +522,15 @@ with col_left:
         "proportion across every run** — it isn't part of the mixture design."
     )
 
+    # Persistent reminder of the caps so users see the boundary conditions
+    # BEFORE they type values, not only after they exceed them.
+    st.info(
+        f"🔒 **Model-supported range: "
+        f"{MIN_SINGLE_COMPONENT:.0f}%–{MAX_SINGLE_COMPONENT:.0f}% per component.** "
+        f"Bounds outside this range are flagged below; the mixture math still "
+        f"runs, but predictions outside the calibrated range are extrapolations."
+    )
+
     c1_col, c2_col, c3_col = st.columns(3)
     for idx, col in enumerate((c1_col, c2_col, c3_col)):
         with col:
@@ -448,30 +544,55 @@ with col_left:
                 value=float(st.session_state.comp_mins[idx]),
                 min_value=0.0, max_value=100.0, step=1.0,
                 key=f"min_{idx}",
-                help=f"Model supports {MIN_SINGLE_COMPONENT:.0f}% and above",
+                help=(
+                    f"Model-supported floor is {MIN_SINGLE_COMPONENT:.0f}%. "
+                    f"You can type a lower number, but you'll be warned."
+                ),
             )
             st.session_state.comp_maxs[idx] = st.number_input(
                 f"C{idx+1} max (%)",
                 value=float(st.session_state.comp_maxs[idx]),
                 min_value=0.0, max_value=100.0, step=1.0,
                 key=f"max_{idx}",
-                help=f"Model supports up to {MAX_SINGLE_COMPONENT:.0f}%",
+                help=(
+                    f"Model-supported ceiling is {MAX_SINGLE_COMPONENT:.0f}%. "
+                    f"You can type a higher number, but you'll be warned."
+                ),
             )
 
-            # Per-component bound status. Only shown when a bound is
-            # genuinely OUTSIDE the model range (< 10% or > 80%). At-the-edge
-            # values are a valid choice and get no caption.
+            # Per-component status caption. Show one of:
+            #   ✅ Inside model range
+            #   🔒 At the model floor / ceiling (edge of validated range)
+            #   ⚠ Outside model range (extrapolation)
+            # Also flag when min > max, since that's an easy typo.
             lo, hi = st.session_state.comp_mins[idx], st.session_state.comp_maxs[idx]
+            notes = []
+            if lo > hi:
+                notes.append(f":red[⚠ min ({lo:.0f}%) > max ({hi:.0f}%)]")
             if lo < MIN_SINGLE_COMPONENT:
-                st.caption(
+                notes.append(
                     f":red[⚠ min {lo:.0f}% is below the model floor "
+                    f"({MIN_SINGLE_COMPONENT:.0f}%) — extrapolating]"
+                )
+            elif lo == MIN_SINGLE_COMPONENT:
+                notes.append(
+                    f":orange[🔒 min sits at the model floor "
                     f"({MIN_SINGLE_COMPONENT:.0f}%)]"
                 )
             if hi > MAX_SINGLE_COMPONENT:
-                st.caption(
+                notes.append(
                     f":red[⚠ max {hi:.0f}% is above the model ceiling "
+                    f"({MAX_SINGLE_COMPONENT:.0f}%) — extrapolating]"
+                )
+            elif hi == MAX_SINGLE_COMPONENT:
+                notes.append(
+                    f":orange[🔒 max sits at the model ceiling "
                     f"({MAX_SINGLE_COMPONENT:.0f}%)]"
                 )
+            if not notes and lo <= hi:
+                notes.append(":green[✅ inside model range]")
+            for n in notes:
+                st.caption(n)
 
     # ---- Model-range violation banner (only when actually violated) ------
     range_violations = []
@@ -518,6 +639,49 @@ with col_left:
         st.info("Binding constraints: " + ", ".join(feas.binding))
     if feas.inactive:
         st.caption("Inactive bounds: " + "; ".join(feas.inactive))
+
+    # ---- Effective (reachable) range per component -----------------------
+    # This is the OTHER kind of cap: even if you set component A max to 60%,
+    # if the other two components' minimums add up to 50%, A's real ceiling
+    # is 50% — the extra 10% you set is dead. We surface this explicitly
+    # because it's the single most common source of "why can't I pick that
+    # composition?" confusion.
+    reach_rows = []
+    for i, key in enumerate(("c1", "c2", "c3")):
+        set_lo = st.session_state.comp_mins[i]
+        set_hi = st.session_state.comp_maxs[i]
+        r_lo, r_hi = feas.reachable[key]
+        # A bound is "capped by other components" when the reachable end is
+        # tighter than the user's set end by more than 0.5 pp.
+        floor_capped = r_lo > set_lo + 0.5
+        ceil_capped = r_hi < set_hi - 0.5
+        status = []
+        if floor_capped:
+            status.append(f"floor lifted to {r_lo:.0f}%")
+        if ceil_capped:
+            status.append(f"ceiling clipped to {r_hi:.0f}%")
+        if not status:
+            status.append("bounds are the real limits")
+        reach_rows.append({
+            "Component": st.session_state.comp_names[i],
+            "You set": f"[{set_lo:.0f}, {set_hi:.0f}]%",
+            "Actually reachable": f"[{r_lo:.0f}, {r_hi:.0f}]%",
+            "Status": "; ".join(status),
+        })
+    any_capped = any("lifted" in r["Status"] or "clipped" in r["Status"]
+                     for r in reach_rows)
+    with st.expander(
+        ("🔒 Effective ranges (some bounds capped by other components)"
+         if any_capped else "Effective ranges"),
+        expanded=any_capped,
+    ):
+        st.caption(
+            "'Actually reachable' is what each component can really take once "
+            "the other two components' bounds are respected. If it's tighter "
+            "than what you set, the extra headroom is dead — no design point "
+            "can use it."
+        )
+        st.table(pd.DataFrame(reach_rows))
 
     # ---- Apex-mode geometry check ----------------------------------------
     apex_ready = False
@@ -583,7 +747,7 @@ with col_left:
                     cnames[0]: round(v[0], 2),
                     cnames[1]: round(v[1], 2),
                     cnames[2]: round(v[2], 2),
-                    "Solubility (mg/mL)": s,
+                    "Solubility (mg/g)": s,
                 }
                 for i, (v, s) in enumerate(zip(
                     st.session_state.design_points, st.session_state.solubilities
@@ -597,11 +761,11 @@ with col_left:
                 key="apex_editor",
                 disabled=["Vertex", cnames[0], cnames[1], cnames[2]],
                 column_config={
-                    "Solubility (mg/mL)": st.column_config.NumberColumn(step=0.1),
+                    "Solubility (mg/g)": st.column_config.NumberColumn(step=0.1),
                 },
             )
             st.session_state.solubilities = [
-                float(x) for x in edited["Solubility (mg/mL)"].tolist()
+                float(x) for x in edited["Solubility (mg/g)"].tolist()
             ]
         else:
             st.info("Waiting for a valid equilateral triangle above.")
@@ -647,6 +811,50 @@ with col_left:
                             )
                         except ValueError as e:
                             st.error(f"Design failed: {e}")
+
+            # ---- Editor for entering measured solubilities against the
+            #      auto-generated compositions. This block was missing
+            #      previously — auto mode placed the points but gave the user
+            #      no way to type in the response values, so Step 3 always
+            #      failed with "solubilities are all zero". Compositions are
+            #      locked (they came from the D-optimal search); only the
+            #      response column is editable.
+            if st.session_state.design_points:
+                st.caption(
+                    "Enter the measured solubility for each suggested run. "
+                    "Compositions are locked to the D-optimal design; only "
+                    "the response column is editable."
+                )
+                cnames = st.session_state.comp_names
+                auto_rows = [
+                    {
+                        "Run": f"R{i+1}",
+                        cnames[0]: round(p[0], 2),
+                        cnames[1]: round(p[1], 2),
+                        cnames[2]: round(p[2], 2),
+                        "Solubility (mg/g)": s,
+                    }
+                    for i, (p, s) in enumerate(zip(
+                        st.session_state.design_points,
+                        st.session_state.solubilities,
+                    ))
+                ]
+                edited_auto = st.data_editor(
+                    pd.DataFrame(auto_rows),
+                    use_container_width=True,
+                    num_rows="fixed",
+                    key="auto_editor",
+                    disabled=["Run", cnames[0], cnames[1], cnames[2]],
+                    column_config={
+                        "Solubility (mg/g)": st.column_config.NumberColumn(step=0.1),
+                    },
+                )
+                new_sols = [float(x) for x in edited_auto["Solubility (mg/g)"].tolist()]
+                # Only invalidate the fit if the user actually changed a value;
+                # otherwise every rerun would wipe an already-fitted model.
+                if new_sols != st.session_state.solubilities:
+                    st.session_state.solubilities = new_sols
+                    st.session_state.fit_result = None
         else:
             # ---- MANUAL ----
             st.caption(
@@ -686,7 +894,7 @@ with col_left:
                         cnames[0]: p[0],
                         cnames[1]: p[1],
                         cnames[2]: p[2],
-                        "Solubility (mg/mL)": s,
+                        "Solubility (mg/g)": s,
                     }
                     for p, s in zip(st.session_state.design_points, st.session_state.solubilities)
                 ]
@@ -700,14 +908,14 @@ with col_left:
                     cnames[0]: st.column_config.NumberColumn(min_value=0.0, max_value=100.0, step=0.1),
                     cnames[1]: st.column_config.NumberColumn(min_value=0.0, max_value=100.0, step=0.1),
                     cnames[2]: st.column_config.NumberColumn(min_value=0.0, max_value=100.0, step=0.1),
-                    "Solubility (mg/mL)": st.column_config.NumberColumn(step=0.1),
+                    "Solubility (mg/g)": st.column_config.NumberColumn(step=0.1),
                 },
             )
             st.session_state.design_points = [
                 (float(r[cnames[0]]), float(r[cnames[1]]), float(r[cnames[2]]))
                 for _, r in edited.iterrows()
             ]
-            st.session_state.solubilities = [float(x) for x in edited["Solubility (mg/mL)"].tolist()]
+            st.session_state.solubilities = [float(x) for x in edited["Solubility (mg/g)"].tolist()]
 
             flags = []
             for p in st.session_state.design_points:
@@ -830,7 +1038,7 @@ with col_left:
             rows = [
                 {
                     "Vertex": f"V{i+1} (high {cnames[i]})",
-                    "Reading (mg/mL)": f"{coef[i]:.2f}",
+                    "Reading (mg/g)": f"{coef[i]:.2f}",
                 }
                 for i in range(3)
             ]
@@ -911,6 +1119,38 @@ with col_left:
 # ---------------------------------------------------------------------------
 with col_right:
     st.subheader("Ternary plot")
+
+    # ---- Plot element toggles ----
+    # Grouped in an expander so they don't consume vertical space by default,
+    # but discoverable via the "Plot controls" summary. Every toggle here is
+    # cosmetic — none of them touch design_points, solubilities, or fits.
+    with st.expander("Plot controls", expanded=False):
+        pc1, pc2 = st.columns(2)
+        with pc1:
+            st.session_state.show_training_points = st.checkbox(
+                "Show training / design points",
+                value=st.session_state.show_training_points,
+                help="Hide the black-outlined circles marking each experiment.",
+            )
+            st.session_state.show_boundary = st.checkbox(
+                "Show design-space boundary line",
+                value=st.session_state.show_boundary,
+                help="Hide the polygon outlining the feasible region.",
+            )
+        with pc2:
+            st.session_state.show_legend = st.checkbox(
+                "Show legend",
+                value=st.session_state.show_legend,
+            )
+            st.session_state.show_apex_labels = st.checkbox(
+                "Show apex value labels",
+                value=st.session_state.show_apex_labels,
+                help=(
+                    "Apex mode only — hide the ivory boxes showing each "
+                    "vertex's measured solubility."
+                ),
+            )
+
     fig = plot_ternary(
         constraints,
         design_pts=st.session_state.design_points or None,
@@ -918,6 +1158,10 @@ with col_right:
         drug=st.session_state.drug_name,
         title_color=st.session_state.title_color,
         apex_mode=st.session_state.apex_mode,
+        show_training_points=st.session_state.show_training_points,
+        show_legend=st.session_state.show_legend,
+        show_apex_labels=st.session_state.show_apex_labels,
+        show_boundary=st.session_state.show_boundary,
     )
     if fig is not None:
         st.pyplot(fig, use_container_width=True)
@@ -925,24 +1169,159 @@ with col_right:
         st.info("Plot will appear here once mpltern is installed / design points are placed.")
 
 # ---------------------------------------------------------------------------
-# EXPORT
+# STEP 5 — VALIDATION POINTS (both apex and Scheffé fits)
 # ---------------------------------------------------------------------------
+# External validation is the honest generalisation check the small-n LOO
+# metric is trying to approximate. The user supplies a handful of
+# compositions they've already measured but that were NOT part of the fit;
+# we predict at those compositions with the current model, overlay the
+# predicted-vs-observed pairs on the parity plot as red triangles, and
+# report validation MAE / RMSE / R². Nothing here touches the training
+# data, the ternary plot, or the fit itself.
 st.divider()
-st.subheader("Export data")
-if st.session_state.design_points and st.session_state.solubilities:
-    export_df = pd.DataFrame(
-        {
-            st.session_state.comp_names[0]: [p[0] for p in st.session_state.design_points],
-            st.session_state.comp_names[1]: [p[1] for p in st.session_state.design_points],
-            st.session_state.comp_names[2]: [p[2] for p in st.session_state.design_points],
-            "Solubility (mg/mL)": st.session_state.solubilities,
-        }
-    )
-    st.download_button(
-        "Download as CSV",
-        data=export_df.to_csv(index=False),
-        file_name="mixture_data.csv",
-        mime="text/csv",
+st.subheader("5. Validation points (optional)")
+
+if st.session_state.fit_result is None:
+    st.info(
+        "Fit the model in Step 3 first. Once a fit exists, you can enter "
+        "external validation compositions here and see how the model "
+        "performs on held-out data."
     )
 else:
-    st.info("No data to export yet.")
+    st.caption(
+        "Enter compositions you've already measured that were **not** part "
+        "of the fit. Each row must sum to 100% and fall inside the feasible "
+        "region to score against the model. Predictions come from the "
+        "current fit; the ternary plot is unaffected."
+    )
+
+    n_val = st.number_input(
+        "Number of validation points",
+        min_value=0, max_value=30,
+        value=len(st.session_state.validation_points),
+        step=1, key="n_val_input",
+    )
+
+    # Grow / shrink the validation buffers to match n_val, seeding new rows
+    # with a feasible interior guess (midpoint of set bounds, renormalised).
+    cur_pts = list(st.session_state.validation_points)
+    cur_meas = list(st.session_state.validation_measurements)
+    while len(cur_pts) < n_val:
+        mids = [
+            (st.session_state.comp_mins[i] + st.session_state.comp_maxs[i]) / 2.0
+            for i in range(3)
+        ]
+        total = sum(mids) or 1.0
+        cur_pts.append(tuple(m * 100.0 / total for m in mids))
+        cur_meas.append(0.0)
+    cur_pts = cur_pts[:n_val]
+    cur_meas = cur_meas[:n_val]
+    st.session_state.validation_points = [tuple(map(float, p)) for p in cur_pts]
+    st.session_state.validation_measurements = [float(x) for x in cur_meas]
+
+    if n_val > 0:
+        cnames = st.session_state.comp_names
+        val_df = pd.DataFrame(
+            [
+                {
+                    "Run": f"V{i+1}",
+                    cnames[0]: p[0],
+                    cnames[1]: p[1],
+                    cnames[2]: p[2],
+                    "Measured (mg/g)": m,
+                }
+                for i, (p, m) in enumerate(zip(
+                    st.session_state.validation_points,
+                    st.session_state.validation_measurements,
+                ))
+            ]
+        )
+        val_edited = st.data_editor(
+            val_df,
+            use_container_width=True,
+            num_rows="fixed",
+            key="validation_editor",
+            disabled=["Run"],
+            column_config={
+                cnames[0]: st.column_config.NumberColumn(
+                    min_value=0.0, max_value=100.0, step=0.1),
+                cnames[1]: st.column_config.NumberColumn(
+                    min_value=0.0, max_value=100.0, step=0.1),
+                cnames[2]: st.column_config.NumberColumn(
+                    min_value=0.0, max_value=100.0, step=0.1),
+                "Measured (mg/g)": st.column_config.NumberColumn(step=0.1),
+            },
+        )
+        st.session_state.validation_points = [
+            (float(r[cnames[0]]), float(r[cnames[1]]), float(r[cnames[2]]))
+            for _, r in val_edited.iterrows()
+        ]
+        st.session_state.validation_measurements = [
+            float(x) for x in val_edited["Measured (mg/g)"].tolist()
+        ]
+
+        # Row-level feasibility flags (same rules as the manual design editor).
+        val_flags = []
+        for p in st.session_state.validation_points:
+            s = sum(p)
+            if abs(s - 100.0) > 0.5:
+                val_flags.append(f"Σ = {s:.1f}%")
+            elif not constraints.contains(p, tol=0.5):
+                val_flags.append("outside constraints")
+            else:
+                val_flags.append("OK")
+        n_val_ok = sum(f == "OK" for f in val_flags)
+        if n_val_ok == n_val:
+            st.success(f"All {n_val} validation rows feasible.")
+        else:
+            bad = [f"row {i+1}: {f}" for i, f in enumerate(val_flags) if f != "OK"]
+            st.warning("Some validation rows will be skipped → " + "; ".join(bad))
+
+        if st.button("Evaluate validation set", key="validate_btn"):
+            X_val = np.array(st.session_state.validation_points, dtype=float)
+            y_val = np.array(st.session_state.validation_measurements, dtype=float)
+            mask = np.array([
+                abs(sum(p) - 100.0) <= 0.5 and constraints.contains(p, tol=0.5)
+                for p in st.session_state.validation_points
+            ])
+            if not mask.any():
+                st.error("No feasible validation rows to evaluate.")
+            elif np.all(y_val[mask] == 0):
+                st.warning(
+                    "All validation measurements are 0 — enter your "
+                    "measured solubilities first."
+                )
+            else:
+                X_use, y_use = X_val[mask], y_val[mask]
+                y_pred = predict_from_fit(X_use, st.session_state.fit_result)
+                # Overlay validation on top of the training parity plot so
+                # the two sets are directly comparable on the same 1:1 line.
+                summary = st.session_state.fit_result["summary"]
+                st.pyplot(
+                    plot_parity(
+                        summary["observed"],
+                        summary["fitted_values"],
+                        loo=summary.get("loo_predictions"),
+                        val_observed=y_use.tolist(),
+                        val_predicted=y_pred.tolist(),
+                        color=st.session_state.title_color,
+                        drug=st.session_state.drug_name,
+                    ),
+                    use_container_width=True,
+                )
+                # Numeric summary alongside the plot for quick reference.
+                resid = y_use - y_pred
+                v_mae = float(np.mean(np.abs(resid)))
+                v_rmse = float(np.sqrt(np.mean(resid ** 2)))
+                v_ss_tot = float(np.sum((y_use - y_use.mean()) ** 2))
+                v_r2 = 1.0 - float(np.sum(resid ** 2)) / v_ss_tot if v_ss_tot > 0 else float("nan")
+                vm1, vm2, vm3, vm4 = st.columns(4)
+                vm1.metric("Val n", f"{len(y_use)}")
+                vm2.metric("Val MAE", f"{v_mae:.2f}")
+                vm3.metric("Val RMSE", f"{v_rmse:.2f}")
+                vm4.metric(
+                    "Val R²",
+                    f"{v_r2:.3f}" if np.isfinite(v_r2) else "n/a",
+                )
+    else:
+        st.caption("Set the number of validation points above to begin.")

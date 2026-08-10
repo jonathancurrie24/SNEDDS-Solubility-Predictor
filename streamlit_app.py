@@ -19,7 +19,9 @@ from mixture_doe import (
     recommend_degree,
     feasible_grid,
     candidate_points,
-    _scheffe_expand,   # used to build the prediction surface
+    _scheffe_expand,        # used to build the prediction surface
+    ternary_to_cartesian,   # 2D projection for the manual-mode hull check
+    hull_vertex_indices,    # flags manual points that don't extend design area
 )
 
 # ============================================================================
@@ -34,7 +36,7 @@ st.set_page_config(
 
 _DEFAULTS = {
     "comp_names": ["Oil", "Surfactant", "Co-Surfactant"],
-    "comp_mins":  [30.0, 20.0, 20.0],
+    "comp_mins":  [30.0, 10.0, 20.0],
     "comp_maxs":  [60.0, 40.0, 50.0],
     "budget": 6,
     "design_points": [],
@@ -69,6 +71,17 @@ for k, v in _DEFAULTS.items():
 # "warning-but-run" path — the model is only defined in this range.
 MIN_SINGLE_COMPONENT = 10.0
 MAX_SINGLE_COMPONENT = 80.0
+
+# Human-friendly labels for each model degree. Used in the parity-plot
+# legend so a reader can tell at a glance which model produced the
+# diagnostic / validation view — otherwise the plot is model-agnostic
+# and you have to scroll up to Step 3's success banner to remember.
+_MODEL_DISPLAY = {
+    "linear": "Linear Scheffé",
+    "quadratic": "Quadratic Scheffé",
+    "special_cubic": "Special-cubic Scheffé",
+    "apex": "Apex read-off",
+}
 
 
 def _apex_predict(points: np.ndarray, vertices, readings) -> np.ndarray:
@@ -207,7 +220,8 @@ def _style_ternary_axes(ax, names, drug, title_color):
 
 def plot_parity(observed, fitted,
                 val_observed=None, val_predicted=None,
-                color="#1f77b4", drug="", title="Diagnostic Plot"):
+                color="#1f77b4", drug="", title="Diagnostic Plot",
+                model_label=None):
     """
     Observed-vs-predicted parity plot.
 
@@ -222,6 +236,16 @@ def plot_parity(observed, fitted,
     on the validation set. `title` controls the figure title, so the
     caller can label the same plotting function as either "Diagnostic
     Plot" (Step 4) or "Validation Plot" (Step 5).
+
+    `model_label` (e.g. "Linear Scheffé", "Special-cubic Scheffé", "Apex
+    read-off") is appended to the in-sample legend entry so the reader
+    can tell at a glance which model produced the parity — otherwise
+    the plot is diagnostic-of-nothing-in-particular.
+
+    Frame styling: the four axis spines are drawn in `color` (the user's
+    chosen title color) as dashed lines, so the parity frame visually
+    matches the plot title and the ternary title bar. That's the
+    unifying accent for everything the user's fit produces.
     """
     observed = np.asarray(observed, dtype=float)
     fitted = np.asarray(fitted, dtype=float)
@@ -247,11 +271,16 @@ def plot_parity(observed, fitted,
 
     ax.plot(limits, limits, "k--", alpha=0.6, zorder=3)
 
+    # Legend entry for in-sample: include the model name so the reader
+    # doesn't have to remember which degree Step 3 fitted.
+    in_sample_label = "In-sample fit"
+    if model_label:
+        in_sample_label = f"In-sample fit ({model_label})"
     ax.scatter(
         observed, fitted,
         marker="s", facecolors="none", edgecolors=color,
         s=70, linewidths=1.5, zorder=4,
-        label="In-sample fit",
+        label=in_sample_label,
     )
     if have_val:
         ax.scatter(
@@ -309,9 +338,16 @@ def plot_parity(observed, fitted,
     ax.grid(True, linestyle="--", alpha=0.5)
     ax.legend(loc="lower right" if not have_val else "upper right",
               frameon=True, fontsize=8)
+    # Frame the plot in the user's chosen title color with a dashed line,
+    # so the parity view visually rhymes with the plot title and the
+    # ternary title bar rather than defaulting to an unrelated black
+    # border. Both properties are set explicitly per side because
+    # matplotlib doesn't support Axes.spines[...].set(**kwargs) uniformly
+    # across versions.
     for side in ("top", "bottom", "left", "right"):
-        ax.spines[side].set_color("black")
-        ax.spines[side].set_linewidth(1.2)
+        ax.spines[side].set_color(color)
+        ax.spines[side].set_linewidth(1.5)
+        ax.spines[side].set_linestyle("--")
 
     plt.tight_layout()
     return fig
@@ -418,9 +454,9 @@ def plot_ternary(constraints, design_pts=None, fit_result=None,
         t_vals = [p[0] for p in loop]
         l_vals = [p[2] for p in loop]
         r_vals = [p[1] for p in loop]
-        boundary_color = title_color if fit_result is not None else "red"
+        boundary_color = "white" if fit_result is not None else "red"
         ax.plot(t_vals, l_vals, r_vals, color=boundary_color,
-                linewidth=2.5, linestyle = "--", label="Design Space", zorder=6)
+                linewidth=2.5, label="Feasible region", zorder=6)
 
     # -- design points ------------------------------------------------------
     if show_training_points and design_pts:
@@ -526,7 +562,7 @@ with col_left:
     st.subheader("1. Components & constraints")
     st.caption(
         "The three components below fill 100% of the formulation. Any "
-        "**co-solvent** (e.g. ethanol, Transcutol HP) must be held at the **same "
+        "**co-solvent** (e.g. ethanol, PG) must be held at the **same "
         "proportion across every run** — it isn't part of the mixture design."
     )
 
@@ -536,7 +572,10 @@ with col_left:
     # make the whole design infeasible and disable Suggest / Fit / Validate.
     st.info(
         f"**Component bounds must be between {MIN_SINGLE_COMPONENT:.0f}% "
-        f"and {MAX_SINGLE_COMPONENT:.0f}%.**"
+        f"and {MAX_SINGLE_COMPONENT:.0f}%.** The model is not defined "
+        f"outside this range; any bound below "
+        f"{MIN_SINGLE_COMPONENT:.0f}% or above {MAX_SINGLE_COMPONENT:.0f}% "
+        f"will make the design infeasible."
     )
 
     # Component inputs are LOCKED once a fit exists, because silently
@@ -965,12 +1004,61 @@ with col_left:
                     flags.append("outside constraints")
                 else:
                     flags.append("OK")
-            n_ok = sum(f == "OK" for f in flags)
+
+            # Convex-hull classification of the feasible manual rows.
+            # The design's effective REGION is the hull of its feasible
+            # points; rows that aren't hull vertices don't extend that
+            # region — they're either interior fills or replicates. They
+            # still contribute to the fit (more data is fine), but the
+            # user should know which rows are actually growing coverage
+            # vs which are just adding a data point somewhere already
+            # covered.
+            ok_indices = [i for i, f in enumerate(flags) if f == "OK"]
+            hull_row_set: set = set()
+            if ok_indices:
+                ok_xy = [
+                    ternary_to_cartesian(*st.session_state.design_points[i])
+                    for i in ok_indices
+                ]
+                local_hull = hull_vertex_indices(ok_xy)
+                hull_row_set = {ok_indices[j] for j in local_hull}
+
+            n_ok = len(ok_indices)
+            n_hull = len(hull_row_set)
+            n_redundant = n_ok - n_hull
+
             if n_ok == len(flags):
-                st.success(f"All {n_ok} rows feasible.")
+                if n_redundant == 0:
+                    st.success(
+                        f"All {n_ok} rows feasible; all sit on the design hull."
+                    )
+                else:
+                    redundant_rows = [
+                        i + 1 for i in ok_indices if i not in hull_row_set
+                    ]
+                    st.success(
+                        f"All {n_ok} rows feasible. {n_hull} form the design "
+                        f"hull (the effective fitted region); {n_redundant} "
+                        f"inside are redundant for coverage "
+                        f"(row{'s' if n_redundant > 1 else ''} "
+                        f"{', '.join(str(r) for r in redundant_rows)}). "
+                        f"They still contribute to the fit."
+                    )
             else:
-                bad = [f"row {i+1}: {f}" for i, f in enumerate(flags) if f != "OK"]
+                bad = [f"row {i+1}: {f}"
+                       for i, f in enumerate(flags) if f != "OK"]
                 st.warning("Some rows need attention → " + "; ".join(bad))
+                if n_hull > 0 and n_redundant > 0:
+                    redundant_rows = [
+                        i + 1 for i in ok_indices if i not in hull_row_set
+                    ]
+                    st.caption(
+                        f"Of the feasible rows: {n_hull} sit on the design "
+                        f"hull, {n_redundant} inside "
+                        f"(row{'s' if n_redundant > 1 else ''} "
+                        f"{', '.join(str(r) for r in redundant_rows)}) — "
+                        f"they don't extend the design region."
+                    )
 
             st.session_state.fit_result = None  # invalidate old fit when editing
 
@@ -1102,6 +1190,7 @@ with col_left:
                             color=st.session_state.title_color,
                             drug=st.session_state.drug_name,
                             title="Diagnostic Plot",
+                            model_label=_MODEL_DISPLAY.get(s["degree"]),
                         ),
                         use_container_width=False,
                     )
@@ -1168,6 +1257,7 @@ with col_left:
                             color=st.session_state.title_color,
                             drug=st.session_state.drug_name,
                             title="Diagnostic Plot",
+                            model_label=_MODEL_DISPLAY.get(s["degree"]),
                         ),
                         use_container_width=False,
                     )
@@ -1384,6 +1474,7 @@ else:
                             color=st.session_state.title_color,
                             drug=st.session_state.drug_name,
                             title="Validation Plot",
+                            model_label=_MODEL_DISPLAY.get(summary["degree"]),
                         ),
                         use_container_width=False,
                     )

@@ -64,6 +64,58 @@ def _order_ccw(points: Sequence[Point]) -> List[Point]:
     return [tuple(points[i]) for i in np.argsort(ang)]
 
 
+def hull_vertex_indices(points_xy: Sequence[Tuple[float, float]],
+                        tol: float = 1e-6) -> List[int]:
+    """
+    Return the input indices that lie on the 2D convex hull as vertices
+    (extreme corner points).
+
+    Points strictly interior to the hull, or collinear on a hull edge but
+    not at a corner, are omitted. Used by the manual-mode UI to classify
+    user-entered design points as 'hull vertex' (extends the effective
+    design region) vs 'inside hull' (adds data but not area — a replicate
+    or an interior fill).
+
+    Implemented with Andrew's monotone-chain algorithm; the `tol` argument
+    controls the cross-product threshold below which three points are
+    treated as collinear (so a middle point on a hull edge is dropped, not
+    kept as a spurious vertex). Ties in position collapse to a single
+    vertex with the lowest input index winning. Fewer than three unique
+    positions -> every input index is returned as a vertex (a line
+    segment or a single point is its own hull).
+    """
+    n = len(points_xy)
+    if n == 0:
+        return []
+    if n <= 2:
+        return list(range(n))
+
+    order = sorted(range(n),
+                   key=lambda i: (points_xy[i][0], points_xy[i][1]))
+    tagged = [(points_xy[i][0], points_xy[i][1], i) for i in order]
+
+    def cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    lower: List[Tuple[float, float, int]] = []
+    for p in tagged:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= tol:
+            lower.pop()
+        lower.append(p)
+    upper: List[Tuple[float, float, int]] = []
+    for p in reversed(tagged):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= tol:
+            upper.pop()
+        upper.append(p)
+
+    hull_pts = lower[:-1] + upper[:-1]
+    if not hull_pts:
+        # All points coincide (or Andrew's chain collapsed to nothing).
+        # Treat the first occurrence as the sole "vertex".
+        return [order[0]]
+    return sorted({p[2] for p in hull_pts})
+
+
 # ----------------------------------------------------------------------------
 # Constraints: the feasible region defined by per-component min/max bounds
 # ----------------------------------------------------------------------------
@@ -88,9 +140,18 @@ class MixtureConstraints:
 
     # -- basic tests --------------------------------------------------------
     def contains(self, point: Sequence[float], tol: float = 1e-6) -> bool:
-        """Is a (c1,c2,c3) composition inside the box constraints and on-simplex?"""
+        """Is a (c1,c2,c3) composition inside the box constraints and on-simplex?
+
+        The sum-to-total check uses `max(tol, 1e-4)`, so callers that pass a
+        permissive `tol` (e.g. 0.5 from the manual editor) also accept the
+        rounding drift that comes from one-decimal-place user input. Without
+        this, (33.3, 33.3, 33.3) — which sums to 99.9 — is silently rejected
+        as "outside constraints" even though every bound is satisfied and
+        the drift is a display-precision artefact, not a real infeasibility.
+        """
         c = dict(zip(("c1", "c2", "c3"), point))
-        if abs(sum(point) - self.total) > 1e-4:
+        sum_tol = max(tol, 1e-4)
+        if abs(sum(point) - self.total) > sum_tol:
             return False
         return all(
             self.bounds[k][0] - tol <= c[k] <= self.bounds[k][1] + tol
@@ -321,6 +382,16 @@ def d_optimal_design(
     Fedorov-style exchange. This replaces the random 20k-iteration
     quadrilateral search with something deterministic and principled.
 
+    For `degree == "special_cubic"` the design is post-processed to
+    guarantee the centroid is included: the special-cubic model's
+    x1*x2*x3 term is what separates it from a quadratic, and that term
+    can only be identified with variation AWAY from the boundary of the
+    feasible region — every vertex and edge midpoint sits on that
+    boundary, so a design that never picks the centroid produces a
+    numerically identifiable but substantively meaningless cubic
+    coefficient. If D-optimal didn't pick the centroid on its own, we
+    swap it in for whichever current slot loses the least log-det.
+
     Returns a dict with the chosen points and the model it is optimal for.
     Raises ValueError if the model is not identifiable with n_points.
     """
@@ -371,6 +442,33 @@ def d_optimal_design(
                         improved = True
         if cur_val > best_val:
             best, best_val = cur, cur_val
+
+    # Enforce the centroid inclusion rule for special_cubic. See the
+    # docstring above for the why; the mechanics: locate the candidate
+    # nearest the true centroid (this should be an exact match since
+    # candidate_points always adds np.mean(verts, axis=0) when
+    # include_centroid=True, but rounding at the tuple-key dedup step
+    # can nudge it, so we still use argmin distance to be safe), then
+    # try swapping it in for each current slot and keep whichever swap
+    # gives the highest log-det. This is a one-slot Fedorov step
+    # constrained to include the centroid; it costs at most n_points
+    # extra logdet calls, which is trivial next to the main search.
+    if degree == "special_cubic":
+        cand_arr = np.array(cand)
+        centroid_target = np.mean(c.vertices(), axis=0)
+        dists = np.linalg.norm(cand_arr - centroid_target, axis=1)
+        centroid_idx = int(np.argmin(dists))
+        if centroid_idx not in best:
+            best_swap, best_swap_val = None, -np.inf
+            for i in range(len(best)):
+                trial = best.copy()
+                trial[i] = centroid_idx
+                val = logdet(trial)
+                if val > best_swap_val:
+                    best_swap_val = val
+                    best_swap = trial
+            if best_swap is not None and np.isfinite(best_swap_val):
+                best, best_val = best_swap, best_swap_val
 
     chosen = [tuple(np.round(cand[i], 2)) for i in best]
     return {

@@ -451,14 +451,14 @@ def plot_ternary(constraints, design_pts=None, fit_result=None,
     if show_boundary and len(verts) >= 3:
         boundary_color = "white" if fit_result is not None else "red"
         n = len(verts)
-    for i in range(n):
-        a, b = verts[i], verts[(i + 1) % n]
-        ax.plot(
-            [a[0], b[0]], [a[2], b[2]], [a[1], b[1]],
-            color=title_color, linewidth=2.5, linestyle="--",
-            label="Feasible region" if i == 0 else None,
-            zorder=6,
-        )
+        for i in range(n):
+            a, b = verts[i], verts[(i + 1) % n]
+            ax.plot(
+                [a[0], b[0]], [a[2], b[2]], [a[1], b[1]],
+                color=title_color, linewidth=2.5, linestyle="--",
+                label="Feasible region" if i == 0 else None,
+                zorder=6,
+            )
 
     # -- design points ------------------------------------------------------
     if show_training_points and design_pts:

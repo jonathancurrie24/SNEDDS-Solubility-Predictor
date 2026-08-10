@@ -34,7 +34,7 @@ st.set_page_config(
 
 _DEFAULTS = {
     "comp_names": ["Oil", "Surfactant", "Co-Surfactant"],
-    "comp_mins":  [30.0, 10.0, 20.0],
+    "comp_mins":  [30.0, 20.0, 20.0],
     "comp_maxs":  [60.0, 40.0, 50.0],
     "budget": 6,
     "design_points": [],
@@ -526,7 +526,7 @@ with col_left:
     st.subheader("1. Components & constraints")
     st.caption(
         "The three components below fill 100% of the formulation. Any "
-        "**co-solvent** (e.g. ethanol, PG) must be held at the **same "
+        "**co-solvent** (e.g. ethanol, Transcutol HP) must be held at the **same "
         "proportion across every run** — it isn't part of the mixture design."
     )
 
@@ -536,10 +536,7 @@ with col_left:
     # make the whole design infeasible and disable Suggest / Fit / Validate.
     st.info(
         f"**Component bounds must be between {MIN_SINGLE_COMPONENT:.0f}% "
-        f"and {MAX_SINGLE_COMPONENT:.0f}%.** The model is not defined "
-        f"outside this range; any bound below "
-        f"{MIN_SINGLE_COMPONENT:.0f}% or above {MAX_SINGLE_COMPONENT:.0f}% "
-        f"will make the design infeasible."
+        f"and {MAX_SINGLE_COMPONENT:.0f}%.**"
     )
 
     # Component inputs are LOCKED once a fit exists, because silently

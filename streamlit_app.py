@@ -63,9 +63,10 @@ for k, v in _DEFAULTS.items():
 # ============================================================================
 # HELPERS
 # ============================================================================
-# Model-supported range per single component. Bounds outside this range are
-# not physically prevented — the user may set them anywhere in 0-100 — but
-# the app warns clearly and the feasibility report flags them as violations.
+# Hard bounds on any single component. The feasibility check treats bounds
+# outside this range as violations, which disables Suggest / Fit / Validate
+# until the user brings the min-max into [MIN, MAX]. There is no
+# "warning-but-run" path — the model is only defined in this range.
 MIN_SINGLE_COMPONENT = 10.0
 MAX_SINGLE_COMPONENT = 80.0
 
@@ -204,37 +205,38 @@ def _style_ternary_axes(ax, names, drug, title_color):
         ax.spines[side].set_linewidth(2)
 
 
-def plot_parity(observed, fitted, loo=None,
+def plot_parity(observed, fitted,
                 val_observed=None, val_predicted=None,
-                color="#1f77b4", drug=""):
+                color="#1f77b4", drug="", title="Diagnostic Plot"):
     """
     Observed-vs-predicted parity plot.
 
     Open squares: in-sample fitted values (training-time predictions).
-    Filled circles: leave-one-out predictions, when available.
     Red triangles: external validation points (`val_observed` vs
     `val_predicted`), when provided. Validation predictions come from the
     fitted model — they are held-out data, not part of the fit — so their
-    scatter around the 1:1 line is the honest generalisation check that
-    LOO-RMSE is trying (with much less data) to approximate.
+    scatter around the 1:1 line is the honest generalisation check.
 
-    A metrics box in the upper-left shows in-sample MAE / RMSE / R² (and
-    LOO-RMSE when available); a second box in the lower-right shows the
-    same three metrics computed on the validation set.
+    A metrics box in the upper-left shows in-sample MAE / RMSE / R²; a
+    second box in the lower-right shows the same three metrics computed
+    on the validation set. `title` controls the figure title, so the
+    caller can label the same plotting function as either "Diagnostic
+    Plot" (Step 4) or "Validation Plot" (Step 5).
     """
     observed = np.asarray(observed, dtype=float)
     fitted = np.asarray(fitted, dtype=float)
-    loo_arr = np.asarray(loo, dtype=float) if loo is not None else None
     val_obs = np.asarray(val_observed, dtype=float) if val_observed is not None else None
     val_pred = np.asarray(val_predicted, dtype=float) if val_predicted is not None else None
     have_val = val_obs is not None and val_pred is not None and len(val_obs) > 0
 
-    fig, ax = plt.subplots(figsize=(6, 6))
+    # Compact size: the parity plot no longer dominates the diagnostics
+    # panel; it sits alongside the R^2 / Adj R^2 tiles at a reasonable
+    # aspect. Rendered without use_container_width in the caller so this
+    # figsize is what the user actually sees.
+    fig, ax = plt.subplots(figsize=(4.5, 4.5))
 
-    # square axes around all data (training + LOO + validation)
+    # square axes around all data (training + validation)
     stack = [observed, fitted]
-    if loo_arr is not None:
-        stack.append(loo_arr)
     if have_val:
         stack.extend([val_obs, val_pred])
     all_vals = np.concatenate(stack)
@@ -248,21 +250,14 @@ def plot_parity(observed, fitted, loo=None,
     ax.scatter(
         observed, fitted,
         marker="s", facecolors="none", edgecolors=color,
-        s=80, linewidths=1.5, zorder=4,
+        s=70, linewidths=1.5, zorder=4,
         label="In-sample fit",
     )
-    if loo_arr is not None:
-        ax.scatter(
-            observed, loo_arr,
-            marker="o", color=color,
-            s=120, edgecolors="white", linewidths=1.5, zorder=5,
-            label="LOO prediction",
-        )
     if have_val:
         ax.scatter(
             val_obs, val_pred,
             marker="^", color="#d62728",
-            s=140, edgecolors="white", linewidths=1.5, zorder=6,
+            s=110, edgecolors="white", linewidths=1.5, zorder=6,
             label="Validation",
         )
 
@@ -275,13 +270,10 @@ def plot_parity(observed, fitted, loo=None,
     r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
 
     lines = [f"MAE   {mae:.2f}", f"RMSE  {rmse:.2f}", f"R²    {r2:.3f}"]
-    if loo_arr is not None:
-        loo_rmse = float(np.sqrt(np.mean((observed - loo_arr) ** 2)))
-        lines.append(f"LOO   {loo_rmse:.2f}")
     props = dict(boxstyle="round", facecolor="white", alpha=0.85, edgecolor="gray")
     ax.text(
         0.05, 0.95, "\n".join(lines),
-        transform=ax.transAxes, fontsize=11, family="monospace",
+        transform=ax.transAxes, fontsize=9, family="monospace",
         verticalalignment="top", bbox=props, zorder=7,
     )
 
@@ -301,7 +293,7 @@ def plot_parity(observed, fitted, loo=None,
         v_props = dict(boxstyle="round", facecolor="#fff5f5", alpha=0.9, edgecolor="#d62728")
         ax.text(
             0.95, 0.05, "\n".join(v_lines),
-            transform=ax.transAxes, fontsize=11, family="monospace",
+            transform=ax.transAxes, fontsize=9, family="monospace",
             verticalalignment="bottom", horizontalalignment="right",
             bbox=v_props, zorder=7,
         )
@@ -309,18 +301,17 @@ def plot_parity(observed, fitted, loo=None,
     ax.set_xlim(limits)
     ax.set_ylim(limits)
     ax.set_aspect("equal", adjustable="box")
-    ax.set_xlabel("Observed (mg/g)")
-    ax.set_ylabel("Predicted (mg/g)")
-    ax.set_title(
-        f"{drug} — parity" if drug else "Parity",
-        color=color, fontweight="bold", pad=10,
-    )
+    ax.set_xlabel("Observed (mg/g)", fontsize=9)
+    ax.set_ylabel("Predicted (mg/g)", fontsize=9)
+    ax.tick_params(labelsize=8)
+    plot_title = f"{title} — {drug}" if drug else title
+    ax.set_title(plot_title, color=color, fontweight="bold", pad=8, fontsize=11)
     ax.grid(True, linestyle="--", alpha=0.5)
     ax.legend(loc="lower right" if not have_val else "upper right",
-              frameon=True, fontsize=9)
+              frameon=True, fontsize=8)
     for side in ("top", "bottom", "left", "right"):
         ax.spines[side].set_color("black")
-        ax.spines[side].set_linewidth(1.5)
+        ax.spines[side].set_linewidth(1.2)
 
     plt.tight_layout()
     return fig
@@ -339,12 +330,25 @@ def plot_ternary(constraints, design_pts=None, fit_result=None,
     The four `show_*` flags are the user-facing plot toggles: hide the
     training-point markers, the legend, the apex value annotations, or the
     feasible-region boundary line without touching the underlying data.
+    They ONLY apply once a fit exists (`fit_result is not None`); the
+    pre-fit plot is standardized (all four elements shown with fixed
+    styling) so the design-space view is consistent regardless of what
+    the user has toggled in the "Plot controls" expander.
     """
     try:
         import mpltern  # noqa: F401  (registers the 'ternary' projection)
     except ImportError:
         st.error("mpltern not installed. Add `mpltern` to requirements.txt.")
         return None
+
+    # Force standardized defaults for the pre-fit view. The user's toggles
+    # are stashed only for the fitted plot; before a fit exists, the plot is
+    # meant to show the feasible region + design points + a legend, period.
+    if fit_result is None:
+        show_training_points = True
+        show_legend = True
+        show_boundary = True
+        show_apex_labels = False
 
     fig = plt.figure(figsize=(8, 7))
     # ternary_sum=100 is the key fix: without it mpltern defaults to a 0-1
@@ -405,6 +409,10 @@ def plot_ternary(constraints, design_pts=None, fit_result=None,
             cbar.set_label("Predicted solubility (mg/g)", rotation=270, labelpad=20)
 
     # -- feasible-region boundary (on top of the surface) ------------------
+    # Explicit zorder=6 so the line renders ABOVE tripcolor (zorder=1) and
+    # tricontour (zorder=2). Without this, matplotlib's default ordering
+    # would draw the boundary underneath the heatmap surface, making the
+    # design-space outline invisible on any fitted plot.
     if show_boundary and len(verts) >= 3:
         loop = verts + [verts[0]]
         t_vals = [p[0] for p in loop]
@@ -412,7 +420,7 @@ def plot_ternary(constraints, design_pts=None, fit_result=None,
         r_vals = [p[1] for p in loop]
         boundary_color = "white" if fit_result is not None else "red"
         ax.plot(t_vals, l_vals, r_vals, color=boundary_color,
-                linewidth=2.5, label="Feasible region")
+                linewidth=2.5, label="Feasible region", zorder=6)
 
     # -- design points ------------------------------------------------------
     if show_training_points and design_pts:
@@ -522,14 +530,31 @@ with col_left:
         "proportion across every run** — it isn't part of the mixture design."
     )
 
-    # Persistent reminder of the caps so users see the boundary conditions
-    # BEFORE they type values, not only after they exceed them.
+    # Persistent reminder of the hard limits so users see the boundary
+    # conditions BEFORE they type values, not only after they exceed them.
+    # This is a hard block, not a soft warning — bounds outside the range
+    # make the whole design infeasible and disable Suggest / Fit / Validate.
     st.info(
-        f"🔒 **Model-supported range: "
-        f"{MIN_SINGLE_COMPONENT:.0f}%–{MAX_SINGLE_COMPONENT:.0f}% per component.** "
-        f"Bounds outside this range are flagged below; the mixture math still "
-        f"runs, but predictions outside the calibrated range are extrapolations."
+        f"**Component bounds must be between {MIN_SINGLE_COMPONENT:.0f}% "
+        f"and {MAX_SINGLE_COMPONENT:.0f}%.** The model is not defined "
+        f"outside this range; any bound below "
+        f"{MIN_SINGLE_COMPONENT:.0f}% or above {MAX_SINGLE_COMPONENT:.0f}% "
+        f"will make the design infeasible."
     )
+
+    # Component inputs are LOCKED once a fit exists, because silently
+    # allowing bound changes would either invalidate the plotted surface
+    # (if we drop the fit_result) or create a mismatch between the plotted
+    # feasible region and the region the fit was actually done on.
+    # A "Reset fit" button below the inputs is the only way to unlock them.
+    inputs_locked = st.session_state.fit_result is not None
+
+    if inputs_locked:
+        st.warning(
+            "Component ranges are locked because a fit exists. "
+            "Use **Reset fit to edit components** below to unlock them "
+            "(this will clear the current fit and any validation results)."
+        )
 
     c1_col, c2_col, c3_col = st.columns(3)
     for idx, col in enumerate((c1_col, c2_col, c3_col)):
@@ -538,15 +563,17 @@ with col_left:
                 f"Component {idx+1} name",
                 value=st.session_state.comp_names[idx],
                 key=f"name_{idx}",
+                disabled=inputs_locked,
             )
             st.session_state.comp_mins[idx] = st.number_input(
                 f"C{idx+1} min (%)",
                 value=float(st.session_state.comp_mins[idx]),
                 min_value=0.0, max_value=100.0, step=1.0,
                 key=f"min_{idx}",
+                disabled=inputs_locked,
                 help=(
-                    f"Model-supported floor is {MIN_SINGLE_COMPONENT:.0f}%. "
-                    f"You can type a lower number, but you'll be warned."
+                    f"Must be at least {MIN_SINGLE_COMPONENT:.0f}%. "
+                    f"Values below the floor make the design infeasible."
                 ),
             )
             st.session_state.comp_maxs[idx] = st.number_input(
@@ -554,64 +581,79 @@ with col_left:
                 value=float(st.session_state.comp_maxs[idx]),
                 min_value=0.0, max_value=100.0, step=1.0,
                 key=f"max_{idx}",
+                disabled=inputs_locked,
                 help=(
-                    f"Model-supported ceiling is {MAX_SINGLE_COMPONENT:.0f}%. "
-                    f"You can type a higher number, but you'll be warned."
+                    f"Must be at most {MAX_SINGLE_COMPONENT:.0f}%. "
+                    f"Values above the ceiling make the design infeasible."
                 ),
             )
 
-            # Per-component status caption. Show one of:
-            #   ✅ Inside model range
-            #   🔒 At the model floor / ceiling (edge of validated range)
-            #   ⚠ Outside model range (extrapolation)
-            # Also flag when min > max, since that's an easy typo.
+            # Per-component status caption. Neutral wording only — the
+            # feasibility banner below is what actually blocks the fit, so
+            # these captions describe the state without adding a second
+            # (potentially conflicting) warning voice.
             lo, hi = st.session_state.comp_mins[idx], st.session_state.comp_maxs[idx]
             notes = []
             if lo > hi:
-                notes.append(f":red[⚠ min ({lo:.0f}%) > max ({hi:.0f}%)]")
+                notes.append(f":red[min ({lo:.0f}%) exceeds max ({hi:.0f}%)]")
             if lo < MIN_SINGLE_COMPONENT:
                 notes.append(
-                    f":red[⚠ min {lo:.0f}% is below the model floor "
-                    f"({MIN_SINGLE_COMPONENT:.0f}%) — extrapolating]"
+                    f":red[min {lo:.0f}% is below the "
+                    f"{MIN_SINGLE_COMPONENT:.0f}% floor]"
                 )
             elif lo == MIN_SINGLE_COMPONENT:
                 notes.append(
-                    f":orange[🔒 min sits at the model floor "
-                    f"({MIN_SINGLE_COMPONENT:.0f}%)]"
+                    f":orange[min at the {MIN_SINGLE_COMPONENT:.0f}% floor]"
                 )
             if hi > MAX_SINGLE_COMPONENT:
                 notes.append(
-                    f":red[⚠ max {hi:.0f}% is above the model ceiling "
-                    f"({MAX_SINGLE_COMPONENT:.0f}%) — extrapolating]"
+                    f":red[max {hi:.0f}% is above the "
+                    f"{MAX_SINGLE_COMPONENT:.0f}% ceiling]"
                 )
             elif hi == MAX_SINGLE_COMPONENT:
                 notes.append(
-                    f":orange[🔒 max sits at the model ceiling "
-                    f"({MAX_SINGLE_COMPONENT:.0f}%)]"
+                    f":orange[max at the {MAX_SINGLE_COMPONENT:.0f}% ceiling]"
                 )
             if not notes and lo <= hi:
-                notes.append(":green[✅ inside model range]")
+                notes.append(":green[inside allowed range]")
             for n in notes:
                 st.caption(n)
 
-    # ---- Model-range violation banner (only when actually violated) ------
+    # ---- Reset-fit button (visible only when inputs are locked) ----------
+    # Clears fit_result + validation so bounds become editable again. Design
+    # points and their solubility values are PRESERVED — if the new bounds
+    # still contain them they can be re-fit as-is; if not, the manual editor
+    # will flag them as "outside constraints" and the fit will skip them.
+    # This is less destructive than a full wipe and matches how bound edits
+    # already work in non-locked flows.
+    if inputs_locked:
+        if st.button("Reset fit to edit components", key="reset_fit_btn"):
+            st.session_state.fit_result = None
+            st.session_state.validation_points = []
+            st.session_state.validation_measurements = []
+            st.rerun()
+
+    # ---- Model-range violation banner (hard block, not warning) ----------
+    # The feasibility gate below also catches these via hard_min / hard_max,
+    # but a per-component summary here makes it obvious which specific bound
+    # is out of range without needing to parse the full violation list.
     range_violations = []
     for i, nm in enumerate(st.session_state.comp_names):
         lo = st.session_state.comp_mins[i]
         hi = st.session_state.comp_maxs[i]
         if lo < MIN_SINGLE_COMPONENT:
             range_violations.append(
-                f"**{nm}** min is {lo:.0f}% (model floor: {MIN_SINGLE_COMPONENT:.0f}%)"
+                f"**{nm}** min is {lo:.0f}% (floor: {MIN_SINGLE_COMPONENT:.0f}%)"
             )
         if hi > MAX_SINGLE_COMPONENT:
             range_violations.append(
-                f"**{nm}** max is {hi:.0f}% (model ceiling: {MAX_SINGLE_COMPONENT:.0f}%)"
+                f"**{nm}** max is {hi:.0f}% (ceiling: {MAX_SINGLE_COMPONENT:.0f}%)"
             )
     if range_violations:
-        st.warning(
-            f"Model is validated for {MIN_SINGLE_COMPONENT:.0f}%–"
-            f"{MAX_SINGLE_COMPONENT:.0f}% per component. Some bounds are "
-            f"outside this range:\n\n" + "\n".join(f"- {v}" for v in range_violations)
+        st.error(
+            f"Bounds outside the allowed {MIN_SINGLE_COMPONENT:.0f}%–"
+            f"{MAX_SINGLE_COMPONENT:.0f}% range. Fix these before proceeding:"
+            "\n\n" + "\n".join(f"- {v}" for v in range_violations)
         )
 
     dcol1, dcol2 = st.columns([2, 1])
@@ -671,7 +713,7 @@ with col_left:
     any_capped = any("lifted" in r["Status"] or "clipped" in r["Status"]
                      for r in reach_rows)
     with st.expander(
-        ("🔒 Effective ranges (some bounds capped by other components)"
+        ("Effective ranges (some bounds capped by other components)"
          if any_capped else "Effective ranges"),
         expanded=any_capped,
     ):
@@ -970,17 +1012,24 @@ with col_left:
                         "coefficients": {i: float(y[i]) for i in range(3)},
                         "r2": float("nan"),
                         "adj_r2": float("nan"),
-                        "loo_rmse": float("nan"),
                         "observed": [float(v) for v in y],
                         "fitted_values": fitted,
-                        "loo_predictions": None,
                         "trustworthy": False,
                         "vertex_values": [float(v) for v in y],
                     },
                 }
                 st.success("Apex model built. Coefficients = vertex readings.")
     elif st.session_state.design_points:
-        if st.button("Fit model", key="fit_btn"):
+        # Gate on feasibility: an out-of-range bound (or any other infeasible
+        # configuration) makes the design box the fit sits inside meaningless,
+        # so we don't allow the fit to run until the user brings the bounds
+        # back inside the allowed 10-80% range.
+        if not feas.feasible:
+            st.error(
+                "Cannot fit: the current constraints are infeasible. "
+                "Fix the violations listed under Step 1 first."
+            )
+        elif st.button("Fit model", key="fit_btn"):
             X_all = np.array(st.session_state.design_points, dtype=float)
             y_all = np.array(st.session_state.solubilities, dtype=float)
 
@@ -1029,9 +1078,8 @@ with col_left:
                 "readings, so there are 0 residual degrees of freedom and no "
                 "error estimate. Interpret the coefficients as 'what each "
                 "vertex measured' and the surface as a linear interpolation of "
-                "those three values (extrapolated beyond the feasible triangle "
-                "for context). Confidence in the surface = confidence in the "
-                "three individual measurements."
+                "those three values across the feasible region. Confidence in "
+                "the surface = confidence in the three individual measurements."
             )
             cnames = list(st.session_state.comp_names)
             coef = st.session_state.fit_result["coef"]
@@ -1045,22 +1093,33 @@ with col_left:
             st.table(pd.DataFrame(rows))
 
             if s.get("observed") and s.get("fitted_values"):
-                st.pyplot(
-                    plot_parity(
-                        s["observed"], s["fitted_values"],
-                        loo=s.get("loo_predictions"),
-                        color=st.session_state.title_color,
-                        drug=st.session_state.drug_name,
-                    ),
-                    use_container_width=True,
-                )
+                st.markdown("**Diagnostic Plot**")
+                # Render parity in a narrower left-hand column so it doesn't
+                # stretch to the full page width, which made a 6x6 figure
+                # look enormous next to two-line text captions.
+                pcol, _ = st.columns([1, 1])
+                with pcol:
+                    st.pyplot(
+                        plot_parity(
+                            s["observed"], s["fitted_values"],
+                            color=st.session_state.title_color,
+                            drug=st.session_state.drug_name,
+                            title="Diagnostic Plot",
+                        ),
+                        use_container_width=False,
+                    )
         else:
+            # LOO has been removed from the summary because at the design
+            # sizes this app targets (n ≈ 4-8, p ≥ 3) a refit on n-1 points
+            # is routinely saturated, making LOO more misleading than
+            # useful. The under-determined vs poor-fit vs trustworthy
+            # verdict now falls out of residual df + adjusted R^2 alone.
             df = s["residual_df"]
 
-            if df < 2 or not np.isfinite(s["loo_rmse"]):
+            if df < 2:
                 verdict, level = "Under-determined", "warning"
                 note = (
-                    f"Only {df} residual degrees of freedom - not enough to "
+                    f"Only {df} residual degree(s) of freedom - not enough to "
                     "check the fit. R² will look near-perfect no matter what. "
                     "Add points or drop to a simpler model."
                 )
@@ -1073,18 +1132,17 @@ with col_left:
             else:
                 verdict, level = "Trustworthy", "success"
                 note = (
-                    f"{df} residual df and positive adjusted R². "
-                    f"Trust LOO-RMSE ({s['loo_rmse']:.2f}) as the real accuracy "
-                    "indicator, not R²."
+                    f"{df} residual df and positive adjusted R². Add "
+                    "validation points in Step 5 for an honest generalisation "
+                    "check."
                 )
 
             {"success": st.success, "warning": st.warning, "error": st.error}[level](verdict)
 
-            m1, m2, m3 = st.columns(3)
+            m1, m2 = st.columns(2)
             m1.metric("R²", f"{s['r2']:.3f}")
-            m2.metric("Adj R²", f"{s['adj_r2']:.3f}")
-            m3.metric("LOO-RMSE",
-                      f"{s['loo_rmse']:.2f}" if np.isfinite(s['loo_rmse']) else "n/a")
+            m2.metric("Adj R²",
+                      f"{s['adj_r2']:.3f}" if np.isfinite(s["adj_r2"]) else "n/a")
 
             st.info(note)
 
@@ -1104,15 +1162,18 @@ with col_left:
             st.code(f"Scheffe ({s['degree']}): {coef_str}", language="text")
 
             if s.get("observed") and s.get("fitted_values"):
-                st.pyplot(
-                    plot_parity(
-                        s["observed"], s["fitted_values"],
-                        loo=s.get("loo_predictions"),
-                        color=st.session_state.title_color,
-                        drug=st.session_state.drug_name,
-                    ),
-                    use_container_width=True,
-                )
+                st.markdown("**Diagnostic Plot**")
+                pcol, _ = st.columns([1, 1])
+                with pcol:
+                    st.pyplot(
+                        plot_parity(
+                            s["observed"], s["fitted_values"],
+                            color=st.session_state.title_color,
+                            drug=st.session_state.drug_name,
+                            title="Diagnostic Plot",
+                        ),
+                        use_container_width=False,
+                    )
 
 # ---------------------------------------------------------------------------
 # RIGHT COLUMN - Plot
@@ -1124,7 +1185,16 @@ with col_right:
     # Grouped in an expander so they don't consume vertical space by default,
     # but discoverable via the "Plot controls" summary. Every toggle here is
     # cosmetic — none of them touch design_points, solubilities, or fits.
-    with st.expander("Plot controls", expanded=False):
+    #
+    # Important: these toggles only apply to the POST-FIT plot. The pre-fit
+    # design-space view uses fixed defaults (see plot_ternary docstring) so
+    # the initial view is consistent regardless of what the user has
+    # toggled here previously.
+    with st.expander("Plot controls (fitted plot only)", expanded=False):
+        st.caption(
+            "These toggles only take effect once a model has been fitted. "
+            "Before a fit, the ternary plot uses standard defaults."
+        )
         pc1, pc2 = st.columns(2)
         with pc1:
             st.session_state.show_training_points = st.checkbox(
@@ -1142,14 +1212,19 @@ with col_right:
                 "Show legend",
                 value=st.session_state.show_legend,
             )
-            st.session_state.show_apex_labels = st.checkbox(
-                "Show apex value labels",
-                value=st.session_state.show_apex_labels,
-                help=(
-                    "Apex mode only — hide the ivory boxes showing each "
-                    "vertex's measured solubility."
-                ),
-            )
+            # Apex-labels toggle is only meaningful in apex mode: the
+            # annotations only render when the fit is an apex read-off.
+            # Hiding the checkbox in Scheffé mode avoids the confusion of
+            # a control that appears to do nothing.
+            if st.session_state.apex_mode:
+                st.session_state.show_apex_labels = st.checkbox(
+                    "Show apex value labels",
+                    value=st.session_state.show_apex_labels,
+                    help=(
+                        "Hide the ivory boxes showing each vertex's measured "
+                        "solubility."
+                    ),
+                )
 
     fig = plot_ternary(
         constraints,
@@ -1171,13 +1246,13 @@ with col_right:
 # ---------------------------------------------------------------------------
 # STEP 5 — VALIDATION POINTS (both apex and Scheffé fits)
 # ---------------------------------------------------------------------------
-# External validation is the honest generalisation check the small-n LOO
-# metric is trying to approximate. The user supplies a handful of
-# compositions they've already measured but that were NOT part of the fit;
-# we predict at those compositions with the current model, overlay the
-# predicted-vs-observed pairs on the parity plot as red triangles, and
-# report validation MAE / RMSE / R². Nothing here touches the training
-# data, the ternary plot, or the fit itself.
+# External validation is the honest generalisation check for a small-n
+# mixture model. The user supplies a handful of compositions they've already
+# measured but that were NOT part of the fit; we predict at those
+# compositions with the current model, overlay the predicted-vs-observed
+# pairs on the parity plot as red triangles, and report validation MAE /
+# RMSE / R². Nothing here touches the training data, the ternary plot,
+# or the fit itself.
 st.divider()
 st.subheader("5. Validation points (optional)")
 
@@ -1297,18 +1372,24 @@ else:
                 # Overlay validation on top of the training parity plot so
                 # the two sets are directly comparable on the same 1:1 line.
                 summary = st.session_state.fit_result["summary"]
-                st.pyplot(
-                    plot_parity(
-                        summary["observed"],
-                        summary["fitted_values"],
-                        loo=summary.get("loo_predictions"),
-                        val_observed=y_use.tolist(),
-                        val_predicted=y_pred.tolist(),
-                        color=st.session_state.title_color,
-                        drug=st.session_state.drug_name,
-                    ),
-                    use_container_width=True,
-                )
+                st.markdown("**Validation Plot**")
+                # Narrow left-hand column keeps the parity figure at a
+                # readable size — the plot is 4.5x4.5 inches and doesn't
+                # need to stretch to full page width.
+                pcol, _ = st.columns([1, 1])
+                with pcol:
+                    st.pyplot(
+                        plot_parity(
+                            summary["observed"],
+                            summary["fitted_values"],
+                            val_observed=y_use.tolist(),
+                            val_predicted=y_pred.tolist(),
+                            color=st.session_state.title_color,
+                            drug=st.session_state.drug_name,
+                            title="Validation Plot",
+                        ),
+                        use_container_width=False,
+                    )
                 # Numeric summary alongside the plot for quick reference.
                 resid = y_use - y_pred
                 v_mae = float(np.mean(np.abs(resid)))

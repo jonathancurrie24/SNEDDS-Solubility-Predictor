@@ -391,8 +391,8 @@ class ScheffeModel:
     Scheffe canonical mixture-model regression (no intercept).
 
     Handles the collinearity that makes an ordinary intercept model invalid on
-    mixture data, and reports diagnostics appropriate for a handful of points,
-    including leave-one-out cross-validation.
+    mixture data, and reports diagnostics (R^2, adjusted R^2, residual df)
+    appropriate for a handful of points.
     """
 
     def __init__(self, degree: str = "linear"):
@@ -427,7 +427,15 @@ class ScheffeModel:
         return _scheffe_expand(X, self.degree) @ self.coef_
 
     def summary(self) -> Dict[str, object]:
-        """R^2, adjusted R^2, LOO-CV RMSE, coefficients, and an honesty flag."""
+        """R^2, adjusted R^2, residual df, coefficients, and an honesty flag.
+
+        Leave-one-out cross-validation was removed: with the design sizes
+        this app targets (n ≈ 4-8, p ≥ 3), refitting on n-1 points routinely
+        produces saturated or ill-conditioned models, so a LOO-RMSE
+        derived from those refits is more misleading than informative.
+        External validation points (Step 5 of the UI) are the honest
+        generalisation check instead.
+        """
         if self.coef_ is None:
             raise RuntimeError("Call fit() first.")
         y, X = self._y, self._X
@@ -442,24 +450,6 @@ class ScheffeModel:
         else:
             adj_r2 = float("nan")
 
-        # Leave-one-out CV — the only trustworthy accuracy signal at small n.
-        # We also keep the per-point LOO predictions so the caller can draw a
-        # parity/residual plot; the summary is the natural place for these.
-        loo_err: List[float] = []
-        loo_preds: List[float] = []
-        if n > p:
-            for i in range(n):
-                mask = np.arange(n) != i
-                try:
-                    m = ScheffeModel(self.degree).fit(X[mask], y[mask])
-                    pi = float(m.predict(X[i : i + 1])[0])
-                    loo_preds.append(pi)
-                    loo_err.append((y[i] - pi) ** 2)
-                except ValueError:
-                    loo_err, loo_preds = [], []
-                    break
-        loo_rmse = float(np.sqrt(np.mean(loo_err))) if loo_err else float("nan")
-
         return {
             "degree": self.degree,
             "n_points": n,
@@ -468,17 +458,15 @@ class ScheffeModel:
             "coefficients": {i: float(b) for i, b in enumerate(self.coef_)},
             "r2": r2,
             "adj_r2": adj_r2,
-            "loo_rmse": loo_rmse,
             "observed": [float(v) for v in y],
             "fitted_values": [float(v) for v in yhat],
-            "loo_predictions": loo_preds if loo_preds else None,
-            "trustworthy": (n - p) >= 2 and not np.isnan(loo_rmse),
+            "trustworthy": (n - p) >= 2,
             "note": (
                 "Saturated or near-saturated fit: R^2 will look perfect but "
                 "means nothing. Collect more points or drop model degree."
                 if (n - p) < 2 else
-                "Enough residual df for a basic error estimate; treat LOO-RMSE "
-                "as the real accuracy indicator, not R^2."
+                "Enough residual df for a basic error estimate. Add validation "
+                "points (Step 5) for an honest generalisation check."
             ),
         }
 

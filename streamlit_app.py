@@ -450,7 +450,7 @@ def plot_ternary(constraints, design_pts=None, fit_result=None,
     # would draw the boundary underneath the heatmap surface, making the
     # design-space outline invisible on any fitted plot.
     if show_boundary and len(verts) >= 3:
-        boundary_color = "white" if fit_result is not None else "red"
+        boundary_color = "title_color" if fit_result is not None else "red"
         n = len(verts)
     for i in range(n):
         a, b = verts[i], verts[(i + 1) % n]

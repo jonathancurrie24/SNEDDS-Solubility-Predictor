@@ -454,9 +454,9 @@ def plot_ternary(constraints, design_pts=None, fit_result=None,
         t_vals = [p[0] for p in loop]
         l_vals = [p[2] for p in loop]
         r_vals = [p[1] for p in loop]
-        boundary_color = "white" if fit_result is not None else "red"
+        boundary_color = "title_color" if fit_result is not None else "red"
         ax.plot(t_vals, l_vals, r_vals, color=boundary_color,
-                linewidth=2.5, label="Feasible region", zorder=6)
+                linewidth=2.5, linestyle = "--", label="Feasible region", zorder=6)
 
     # -- design points ------------------------------------------------------
     if show_training_points and design_pts:

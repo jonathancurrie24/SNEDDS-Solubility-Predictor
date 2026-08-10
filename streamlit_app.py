@@ -989,11 +989,23 @@ with col_left:
                     "Solubility (mg/g)": st.column_config.NumberColumn(step=0.1),
                 },
             )
-            st.session_state.design_points = [
+            new_design = [
                 (float(r[cnames[0]]), float(r[cnames[1]]), float(r[cnames[2]]))
                 for _, r in edited.iterrows()
             ]
-            st.session_state.solubilities = [float(x) for x in edited["Solubility (mg/g)"].tolist()]
+            new_sols = [float(x) for x in edited["Solubility (mg/g)"].tolist()]
+            # Only invalidate the fit if the user actually changed a value;
+            # otherwise every rerun would wipe an already-fitted model
+            # (mirrors the guard in auto mode above). Without this, any
+            # interaction on the page — toggling a plot control, editing a
+            # component name, even a scroll-triggered rerun — silently drops
+            # fit_result, and the user never gets to see the diagnostics,
+            # heatmap, or validation section for a model they just fitted.
+            if (new_design != st.session_state.design_points
+                    or new_sols != st.session_state.solubilities):
+                st.session_state.design_points = new_design
+                st.session_state.solubilities = new_sols
+                st.session_state.fit_result = None
 
             flags = []
             for p in st.session_state.design_points:
@@ -1059,8 +1071,6 @@ with col_left:
                         f"{', '.join(str(r) for r in redundant_rows)}) — "
                         f"they don't extend the design region."
                     )
-
-            st.session_state.fit_result = None  # invalidate old fit when editing
 
     st.divider()
 

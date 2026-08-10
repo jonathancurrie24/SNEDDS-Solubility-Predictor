@@ -1,5 +1,5 @@
 """
-Streamlit app for SNEDDS Solubility Predictor - constrained-mixture DOE and Scheffe modeling.
+Streamlit app for Mixture Studio - constrained-mixture DOE and Scheffe modeling.
 
 Install: pip install streamlit numpy matplotlib mpltern pandas
 Run:     streamlit run streamlit_app.py
@@ -57,6 +57,42 @@ for k, v in _DEFAULTS.items():
 # the app warns clearly and the feasibility report flags them as violations.
 MIN_SINGLE_COMPONENT = 10.0
 MAX_SINGLE_COMPONENT = 80.0
+
+
+def _apex_predict(points: np.ndarray, vertices, readings) -> np.ndarray:
+    """
+    Linear interpolation over the feasible triangle using barycentric
+    coordinates in the pseudo-component space.
+
+    For each point P (composition summing to 100) we solve
+        w1*V1 + w2*V2 + w3*V3 = P,   w1 + w2 + w3 = 1
+    for the barycentric weights (w1, w2, w3), then predict
+        y_hat(P) = w1*y1 + w2*y2 + w3*y3.
+
+    At P = Vi this gives w = e_i and y_hat = y_i exactly, which is the whole
+    point of the pseudo-component read-off. The previous formula
+    ((P/100) @ readings) treated the ORIGINAL components as pseudo-components
+    and was only correct when the vertices sat at (100,0,0), (0,100,0),
+    (0,0,100) — i.e. the unconstrained simplex corners.
+
+    points:   (N, 3) compositions
+    vertices: length-3 iterable of 3-tuples (the feasible-triangle corners)
+    readings: length-3 iterable of measured responses at those vertices
+    """
+    V = np.asarray(vertices, dtype=float)   # (3, 3)
+    y = np.asarray(readings, dtype=float)   # (3,)
+    P = np.atleast_2d(np.asarray(points, dtype=float))  # (N, 3)
+
+    # 2 composition equations + 1 sum-to-one constraint = 3x3 system per point.
+    # Solve once for all N via a single matrix inverse.
+    A = np.array([
+        [V[0, 0], V[1, 0], V[2, 0]],
+        [V[0, 1], V[1, 1], V[2, 1]],
+        [1.0,     1.0,     1.0    ],
+    ])
+    rhs = np.column_stack([P[:, 0], P[:, 1], np.ones(len(P))])  # (N, 3)
+    W = rhs @ np.linalg.inv(A).T                                # (N, 3) weights
+    return W @ y                                                # (N,)
 
 
 def get_constraints() -> MixtureConstraints:
@@ -246,11 +282,21 @@ def plot_ternary(constraints, design_pts=None, fit_result=None,
         deg = fit_result["degree"]
 
         if deg == "apex":
-            # Same feasible-region grid as the regular fit: no extrapolation.
-            # The linear Scheffe surface is still (x/100) @ betas, but only
-            # evaluated inside the design polygon.
+            # Barycentric interpolation w.r.t. the three feasible-triangle
+            # vertices. The previous formula (grid/100) @ coef treated the
+            # ORIGINAL components as pseudo-components — which is only correct
+            # if the vertices sit at pure-component corners (100,0,0) etc.
+            # For any interior feasible triangle it gives wrong values
+            # everywhere, including at the vertices themselves (where the
+            # prediction must equal the measured reading).
             grid_pts = feasible_grid(constraints, step=2.0)
-            preds = (grid_pts / 100.0) @ coef if len(grid_pts) else np.array([])
+            V = fit_result.get("apex_vertices")
+            y = fit_result.get("apex_readings")
+            if V is None or y is None:
+                # Backward compatibility with older fit_result payloads.
+                V = design_pts
+                y = [coef_dict[i] for i in range(3)]
+            preds = _apex_predict(grid_pts, V, y) if len(grid_pts) else np.array([])
         else:
             grid_pts = feasible_grid(constraints, step=2.0)
             preds = _scheffe_expand(grid_pts, deg) @ coef if len(grid_pts) else np.array([])
@@ -692,19 +738,22 @@ with col_left:
             if np.all(y == 0):
                 st.warning("All solubilities are 0 - enter your measurements first.")
             else:
-                # In apex mode the linear-Scheffe coefficients ARE the vertex
-                # readings, matching the pseudo-component interpretation used
-                # in the original notebook code. The fitted values are the
-                # linear-Scheffe predictions at each vertex in ORIGINAL
-                # coordinates; they only equal the readings when a vertex sits
-                # at a pure component, so the parity plot will show the mild
-                # mismatch caused by extrapolating from pseudo-components.
+                # Apex mode is a barycentric interpolation over the feasible
+                # triangle in pseudo-component space: the coefficients (β1,β2,β3)
+                # are the readings at V1,V2,V3, and predictions at any interior
+                # point P come from the barycentric weights of P w.r.t. the
+                # vertices. At each vertex the weights collapse to a basis
+                # vector, so the fitted value equals the measured value exactly.
+                # We stash the vertex compositions on the fit_result so the
+                # plot function can evaluate the surface without re-deriving
+                # them from state.
                 V = np.array(st.session_state.design_points, dtype=float)
-                betas = y  # coefficients = vertex readings
-                fitted = ((V / 100.0) @ betas).tolist()
+                fitted = _apex_predict(V, V, y).tolist()  # equal to y by construction
                 st.session_state.fit_result = {
                     "coef": {i: float(y[i]) for i in range(3)},
                     "degree": "apex",
+                    "apex_vertices": [tuple(float(x) for x in v) for v in V],
+                    "apex_readings": [float(v) for v in y],
                     "summary": {
                         "degree": "apex",
                         "n_points": 3,

@@ -617,7 +617,7 @@ with col_left:
                 disabled=inputs_locked,
                 help=(
                     f"Must be at most {MAX_SINGLE_COMPONENT:.0f}%. "
-                    f"Values above the ceiling make the design infeasible."
+                    f"Values above the upper limit make the design infeasible."
                 ),
             )
 
@@ -636,7 +636,7 @@ with col_left:
                 )
             elif lo == MIN_SINGLE_COMPONENT:
                 notes.append(
-                    f":orange[min at the {MIN_SINGLE_COMPONENT:.0f}% limit]"
+                    f":orange[min at the {MIN_SINGLE_COMPONENT:.0f}% lower limit]"
                 )
             if hi > MAX_SINGLE_COMPONENT:
                 notes.append(

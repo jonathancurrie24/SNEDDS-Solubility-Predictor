@@ -479,8 +479,7 @@ def plot_ternary(constraints, design_pts=None, fit_result=None,
     # not % w/w of the whole formulation — say so on the axes and in a
     # footnote so the figure is unambiguous on its own.
     _style_ternary_axes(ax, constraints.names,
-                        drug or "SNEDDS Solubility Prediction App", title_color,
-                        unit="% of blend," if cosolvent_pct > 0 else "% w/w")
+                        drug or "SNEDDS Solubility Prediction App", title_color)
     if cosolvent_pct > 0:
         fig.text(
             0.45, 0.015,

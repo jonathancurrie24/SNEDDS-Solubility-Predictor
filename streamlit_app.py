@@ -192,6 +192,27 @@ def predict_from_fit(points, fit_result) -> np.ndarray:
     return _scheffe_expand(points, fit_result["degree"]) @ coef
 
 
+def formulation_columns(points):
+    """
+    Convert ternary blend compositions into full-formulation % w/w.
+
+    The ternary coordinates (summing to 100) describe the oil / surfactant /
+    co-surfactant blend only. The co-solvent chosen in Step 1 is added at
+    one fixed % w/w in every formulation, so each blend component makes up
+    (100 - co-solvent)% x its blend share. Returns an ordered dict of
+    column name -> list of values (4 columns, each row summing to 100) so
+    someone can weigh out the formulation directly.
+    """
+    cnames = st.session_state.comp_names
+    cs_pct = float(st.session_state.cosolvent_pct)
+    scale = (100.0 - cs_pct) / 100.0
+    cols = {}
+    for i in range(3):
+        cols[f"{cnames[i]} (% w/w)"] = [round(float(p[i]) * scale, 2) for p in points]
+    cols[f"{st.session_state.cosolvent_name} (% w/w)"] = [round(cs_pct, 2)] * len(points)
+    return cols
+
+
 def get_constraints() -> MixtureConstraints:
     return MixtureConstraints(
         bounds={
@@ -522,7 +543,7 @@ def plot_ternary(constraints, design_pts=None, fit_result=None,
             ax.plot(
                 [a[0], b[0]], [a[2], b[2]], [a[1], b[1]],
                 color=title_color, linewidth=2.5, linestyle="--",
-                label="Feasible region" if i == 0 else None,
+                label="Design Space Region" if i == 0 else None,
                 zorder=6,
             )
 
@@ -603,11 +624,11 @@ with mode_col1:
         key="apex_toggle",
         on_change=_on_apex_toggle,
         help=(
-            "Uses the 3 vertices of the feasible region as pseudo-components. "
+            "Uses the 3 vertices of the design space region as pseudo-components. "
             "Coefficients are read directly from the observations at those "
-            "vertices. The linear Scheffe surface is shown across the feasible "
-            "region only (no extrapolation beyond the design box). Requires "
-            "the feasible region to be an equilateral triangle."
+            "vertices. The linear Scheffe surface is shown across the design "
+            "space region only (no extrapolation beyond the design box). Requires "
+            "the design space region to be an equilateral triangle."
         ),
     )
 with mode_col1b:
@@ -629,7 +650,7 @@ with mode_col2:
     if st.session_state.apex_mode:
         st.caption(
             "Apex mode active: the design is the 3 vertices, the fit is the "
-            "linear Scheffe read-off, and the plot covers the feasible region."
+            "linear Scheffe read-off, and the plot covers the design space region."
         )
     elif st.session_state.wam_mode:
         st.caption(
@@ -672,9 +693,11 @@ with col_left:
     # ---- Step 1: Components & Constraints ----
     st.subheader("1. Components & constraints")
     st.caption(
-        "The three components below fill 100% of the formulation. Any "
-        "**co-solvent** (e.g. ethanol, Transcutol HP) must be held at the **same "
-        "proportion across every run** — it isn't part of the mixture design."
+        "The three components below form the mixture design: their ranges are "
+        "% of the oil / surfactant / co-surfactant **blend**, which always sums "
+        "to 100%. A **co-solvent** (e.g. ethanol, Transcutol HP), if used, is "
+        "added at **one fixed concentration in every formulation**; the blend "
+        "makes up the remaining (100 − co-solvent)%."
     )
 
     # Persistent reminder of the hard limits so users see the boundary
@@ -763,6 +786,39 @@ with col_left:
             for n in notes:
                 st.caption(n)
 
+    # ---- Fixed co-solvent (all modes) ------------------------------------
+    # Held constant across the whole design space. It does not change the
+    # ternary geometry, but it IS part of every formulation someone has to
+    # make, so suggested/entered points are also listed as full-formulation
+    # % w/w (see formulation_columns). Locked with the components once a
+    # model exists, because the measured solubilities depend on it.
+    cs_col1, cs_col2 = st.columns([2, 1])
+    with cs_col1:
+        st.session_state.cosolvent_name = st.text_input(
+            "Co-solvent name",
+            value=st.session_state.cosolvent_name,
+            key="cosolvent_name_input",
+            disabled=inputs_locked,
+        )
+    with cs_col2:
+        st.session_state.cosolvent_pct = float(st.number_input(
+            "Co-solvent (% w/w, fixed)",
+            value=float(st.session_state.cosolvent_pct),
+            min_value=0.0, max_value=95.0, step=0.5,
+            key="cosolvent_pct_input",
+            disabled=inputs_locked,
+            help=(
+                "Percentage of the TOTAL formulation, identical in every run. "
+                "Set to 0 if no co-solvent is used."
+            ),
+        ))
+    if st.session_state.cosolvent_pct > 0:
+        st.caption(
+            f"Every formulation contains {st.session_state.cosolvent_pct:g}% w/w "
+            f"{st.session_state.cosolvent_name}; the blend is the other "
+            f"{100 - st.session_state.cosolvent_pct:g}%."
+        )
+
     # ---- Reset-fit button (visible only when inputs are locked) ----------
     # Clears fit_result + validation so bounds become editable again. Design
     # points and their solubility values are PRESERVED — if the new bounds
@@ -815,7 +871,7 @@ with col_left:
     feas = constraints.feasibility_report()
 
     if feas.feasible:
-        st.success("Feasible region OK")
+        st.success("Design Space Region OK")
     else:
         st.error("Infeasible - fix the following:")
         for v in feas.violations:
@@ -883,7 +939,7 @@ with col_left:
             mean_s = float(np.mean(sides))
             spread = (max(sides) - min(sides)) / mean_s * 100
             st.error(
-                f"Apex mode requires an equilateral feasible triangle. Sides "
+                f"Apex mode requires an equilateral design space triangle. Sides "
                 f"are {sides[0]:.2f}, {sides[1]:.2f}, {sides[2]:.2f} "
                 f"(spread {spread:.1f}% of mean; tolerance is 2%). "
                 f"Adjust bounds so the three sides match."
@@ -891,7 +947,7 @@ with col_left:
         else:
             apex_ready = True
             st.success(
-                f"Equilateral feasible triangle detected "
+                f"Equilateral design space triangle detected "
                 f"(side ≈ {float(np.mean(sides)):.2f}). Apex fit available."
             )
 
@@ -904,7 +960,7 @@ with col_left:
         # =============== APEX MODE ===============
         st.caption(
             "In apex mode the design is fixed to the 3 vertices of the "
-            "feasible triangle. Enter one measured solubility per vertex; "
+            "design space triangle. Enter one measured solubility per vertex; "
             "the linear Scheffe coefficients ARE those readings."
         )
 
@@ -927,25 +983,21 @@ with col_left:
                 st.session_state.fit_result = None
 
             cnames = st.session_state.comp_names
-            vertex_rows = [
-                {
-                    "Vertex": f"V{i+1} (high {cnames[i]})",
-                    cnames[0]: round(v[0], 2),
-                    cnames[1]: round(v[1], 2),
-                    cnames[2]: round(v[2], 2),
-                    "Solubility (mg/g)": s,
-                }
-                for i, (v, s) in enumerate(zip(
-                    st.session_state.design_points, st.session_state.solubilities
-                ))
-            ]
-            edit_df = pd.DataFrame(vertex_rows)
+            comp_cols = formulation_columns(st.session_state.design_points)
+            edit_df = pd.DataFrame({
+                "Vertex": [f"V{i+1} (high {cnames[i]})" for i in range(3)],
+                **comp_cols,
+                "Solubility (mg/g)": list(st.session_state.solubilities),
+            })
+            st.caption("Compositions are the full formulation (% w/w), "
+                       "co-solvent included.")
             edited = st.data_editor(
                 edit_df,
                 use_container_width=True,
                 num_rows="fixed",
+                hide_index=True,
                 key="apex_editor",
-                disabled=["Vertex", cnames[0], cnames[1], cnames[2]],
+                disabled=["Vertex", *comp_cols],
                 column_config={
                     "Solubility (mg/g)": st.column_config.NumberColumn(step=0.1),
                 },
@@ -963,30 +1015,10 @@ with col_left:
             "No design points are needed. Enter the solubility of the drug in "
             "each **pure** excipient; the predicted solubility of any blend is "
             "the weight-fraction-weighted sum (Equation 1). The ternary axes "
-            "describe the blend **excluding** the co-solvent, which is held at "
-            "one fixed concentration across the whole design space."
+            "describe the blend **excluding** the co-solvent, whose fixed "
+            "concentration is set in Step 1."
         )
-
-        cs1, cs2 = st.columns([1.4, 1])
-        with cs1:
-            st.session_state.cosolvent_name = st.text_input(
-                "Co-solvent name",
-                value=st.session_state.cosolvent_name,
-                key="cosolvent_name_input",
-            )
-        with cs2:
-            new_pct = st.number_input(
-                "Co-solvent (% w/w, fixed)",
-                value=float(st.session_state.cosolvent_pct),
-                min_value=0.0, max_value=95.0, step=0.5,
-                key="cosolvent_pct_input",
-                help=(
-                    "Percentage of the TOTAL formulation. Identical for every "
-                    "composition in the design space; the three ternary "
-                    "components share the remaining (100 − this)%."
-                ),
-            )
-        f_cs = new_pct / 100.0
+        f_cs = st.session_state.cosolvent_pct / 100.0
         st.latex(
             r"S_{mix} = \sum_{i} w_i S_i,\qquad "
             r"w_i = (1 - w_{cs})\,\frac{x_i}{100},\quad "
@@ -1028,10 +1060,8 @@ with col_left:
         new_wam_sols = [float(x) for x in wam_edited["Sᵢ in pure excipient (mg/g)"].tolist()]
         # Only drop the WAM prediction when an input actually changed, so
         # unrelated reruns (plot toggles, title edits) don't wipe it.
-        if (new_wam_sols != list(st.session_state.wam_pure_sols)
-                or new_pct != st.session_state.cosolvent_pct):
+        if new_wam_sols != list(st.session_state.wam_pure_sols):
             st.session_state.wam_pure_sols = new_wam_sols
-            st.session_state.cosolvent_pct = float(new_pct)
             if (st.session_state.fit_result is not None
                     and st.session_state.fit_result["degree"] == "wam"):
                 st.session_state.fit_result = None
@@ -1087,30 +1117,24 @@ with col_left:
             #      response column is editable.
             if st.session_state.design_points:
                 st.caption(
-                    "Enter the measured solubility for each suggested run. "
-                    "Compositions are locked to the D-optimal design; only "
-                    "the response column is editable."
+                    "Formulations to prepare, as % w/w of the full formulation "
+                    "(co-solvent included; each row sums to 100%). Enter the "
+                    "measured solubility for each run — compositions are locked "
+                    "to the D-optimal design."
                 )
-                cnames = st.session_state.comp_names
-                auto_rows = [
-                    {
-                        "Run": f"R{i+1}",
-                        cnames[0]: round(p[0], 2),
-                        cnames[1]: round(p[1], 2),
-                        cnames[2]: round(p[2], 2),
-                        "Solubility (mg/g)": s,
-                    }
-                    for i, (p, s) in enumerate(zip(
-                        st.session_state.design_points,
-                        st.session_state.solubilities,
-                    ))
-                ]
+                comp_cols = formulation_columns(st.session_state.design_points)
+                auto_df = pd.DataFrame({
+                    "Run": [f"R{i+1}" for i in range(len(st.session_state.design_points))],
+                    **comp_cols,
+                    "Solubility (mg/g)": list(st.session_state.solubilities),
+                })
                 edited_auto = st.data_editor(
-                    pd.DataFrame(auto_rows),
+                    auto_df,
                     use_container_width=True,
                     num_rows="fixed",
+                    hide_index=True,
                     key="auto_editor",
-                    disabled=["Run", cnames[0], cnames[1], cnames[2]],
+                    disabled=["Run", *comp_cols],
                     column_config={
                         "Solubility (mg/g)": st.column_config.NumberColumn(step=0.1),
                     },
@@ -1124,7 +1148,8 @@ with col_left:
         else:
             # ---- MANUAL ----
             st.caption(
-                "Enter each composition as (C1, C2, C3). Rows are validated "
+                "Enter each composition as (C1, C2, C3) in % of the blend "
+                "(excluding co-solvent; rows sum to 100). Rows are validated "
                 "against the constraints; only feasible rows contribute to the fit."
             )
 
@@ -1194,6 +1219,19 @@ with col_left:
                 st.session_state.design_points = new_design
                 st.session_state.solubilities = new_sols
                 st.session_state.fit_result = None
+
+            st.caption(
+                "Formulations to prepare (% w/w of the full formulation, "
+                f"{st.session_state.cosolvent_name} included):"
+            )
+            st.dataframe(
+                pd.DataFrame({
+                    "Run": [f"R{i+1}" for i in range(len(st.session_state.design_points))],
+                    **formulation_columns(st.session_state.design_points),
+                }),
+                use_container_width=True,
+                hide_index=True,
+            )
 
             flags = []
             for p in st.session_state.design_points:
@@ -1398,7 +1436,7 @@ with col_left:
                 "readings, so there are 0 residual degrees of freedom and no "
                 "error estimate. Interpret the coefficients as 'what each "
                 "vertex measured' and the surface as a linear interpolation of "
-                "those three values across the feasible region. Confidence in "
+                "those three values across the design space region. Confidence in "
                 "the surface = confidence in the three individual measurements."
             )
             cnames = list(st.session_state.comp_names)
@@ -1564,7 +1602,7 @@ with col_right:
             st.session_state.show_boundary = st.checkbox(
                 "Show design-space boundary line",
                 value=st.session_state.show_boundary,
-                help="Hide the polygon outlining the feasible region.",
+                help="Hide the polygon outlining the design space region.",
             )
         with pc2:
             st.session_state.show_legend = st.checkbox(
@@ -1625,15 +1663,15 @@ if st.session_state.fit_result is None:
 else:
     st.caption(
         "Enter compositions you've already measured that were **not** part "
-        "of the fit. Each row must sum to 100% and fall inside the feasible "
-        "region to score against the model. Predictions come from the "
+        "of the fit. Each row must sum to 100% and fall inside the design "
+        "space region to score against the model. Predictions come from the "
         "current fit; the ternary plot is unaffected."
     )
-    if st.session_state.fit_result["degree"] == "wam":
+    if st.session_state.cosolvent_pct > 0:
         st.caption(
-            f"WAM mode: enter each formulation's ternary composition (blend "
-            f"excluding {st.session_state.cosolvent_name}) and its measured "
-            f"solubility. {st.session_state.cosolvent_name} is taken as "
+            f"Enter compositions as % of the blend (excluding "
+            f"{st.session_state.cosolvent_name}); "
+            f"{st.session_state.cosolvent_name} is taken as "
             f"{st.session_state.cosolvent_pct:g}% w/w in every formulation."
         )
 

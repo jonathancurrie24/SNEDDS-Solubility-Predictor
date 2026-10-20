@@ -91,8 +91,8 @@ _MODEL_DISPLAY = {
     "linear": "Linear Scheffé",
     "quadratic": "Quadratic Scheffé",
     "special_cubic": "Special-cubic Scheffé",
-    "apex": "Apex read-off",
-    "wam": "Weighted average (WAM)",
+    "apex": "Pseudo-Component Model (PCM)",
+    "wam": "Weighted Average Model (WAM)",
 }
 
 
@@ -620,7 +620,18 @@ def plot_ternary(constraints, design_pts=None, fit_result=None,
 # PAGE LAYOUT
 # ============================================================================
 st.markdown("## △ SNEDDS Solubility Prediction App")
-st.markdown("Design, sample, and model a three-component formulation space.")
+# Subtitle names the active model. The toggle widgets are drawn below, but
+# their keyed state is already current at this point in the rerun.
+if st.session_state.get("apex_toggle"):
+    _model_name = "Pseudo-Component Model (PCM)"
+elif st.session_state.get("wam_toggle"):
+    _model_name = "Weighted Average Model (WAM)"
+else:
+    _model_name = "Multiple Linear Regression (MLR) model"
+st.markdown(
+    f"Design, sample, and model a three-component formulation space "
+    f"using the **{_model_name}**."
+)
 
 # ---- Top-of-page mode toggle ---------------------------------------------
 def _on_apex_toggle():
@@ -637,7 +648,7 @@ def _on_wam_toggle():
 mode_col1, mode_col1b, mode_col2 = st.columns([1, 1, 2])
 with mode_col1:
     st.toggle(
-        "Apex prediction mode",
+        "Pseudo-Component Model (PCM)",
         key="apex_toggle",
         on_change=_on_apex_toggle,
         help=(
@@ -650,7 +661,7 @@ with mode_col1:
     )
 with mode_col1b:
     st.toggle(
-        "Weighted-average (WAM) mode",
+        "Weighted Average Model (WAM)",
         key="wam_toggle",
         on_change=_on_wam_toggle,
         help=(
@@ -666,12 +677,12 @@ st.session_state.wam_mode = st.session_state.wam_toggle
 with mode_col2:
     if st.session_state.apex_mode:
         st.caption(
-            "Apex mode active: the design is the 3 vertices, the fit is the "
+            "PCM active: the design is the 3 vertices, the fit is the "
             "linear Scheffe read-off, and the plot covers the design space region."
         )
     elif st.session_state.wam_mode:
         st.caption(
-            "WAM mode active: predictions come from pure-excipient "
+            "WAM active: predictions come from pure-excipient "
             "solubilities and weight fractions (Equation 1) — no design "
             "points or fitting. Compare against measured formulations in "
             "Step 5."
@@ -957,7 +968,7 @@ with col_left:
         sides = constraints.side_lengths()
         if len(sides) != 3:
             st.error(
-                f"Apex mode requires exactly 3 vertices; the current region "
+                f"PCM requires exactly 3 vertices; the current region "
                 f"has {len(sides)}. Tighten a bound so one constraint stops "
                 f"being active."
             )
@@ -965,7 +976,7 @@ with col_left:
             mean_s = float(np.mean(sides))
             spread = (max(sides) - min(sides)) / mean_s * 100
             st.error(
-                f"Apex mode requires an equilateral design space triangle. Sides "
+                f"PCM requires an equilateral design space triangle. Sides "
                 f"are {sides[0]:.2f}, {sides[1]:.2f}, {sides[2]:.2f} "
                 f"(spread {spread:.1f}% of mean; tolerance is 2%). "
                 f"Adjust bounds so the three sides match."
@@ -974,7 +985,7 @@ with col_left:
             apex_ready = True
             st.success(
                 f"Equilateral design space triangle detected "
-                f"(side ≈ {float(np.mean(sides)):.2f}). Apex fit available."
+                f"(side ≈ {float(np.mean(sides)):.2f}). PCM fit available."
             )
 
     st.divider()
@@ -985,7 +996,7 @@ with col_left:
     if st.session_state.apex_mode:
         # =============== APEX MODE ===============
         st.caption(
-            "In apex mode the design is fixed to the 3 vertices of the "
+            "In the PCM the design is fixed to the 3 vertices of the "
             "design space triangle. Enter one measured solubility per vertex; "
             "the linear Scheffe coefficients ARE those readings."
         )
@@ -1330,7 +1341,7 @@ with col_left:
     st.subheader("3. Fit the model")
 
     if st.session_state.apex_mode:
-        if apex_ready and st.button("Fit apex model", key="fit_apex_btn"):
+        if apex_ready and st.button("Fit PCM", key="fit_apex_btn"):
             y = np.array(st.session_state.solubilities, dtype=float)
             if np.all(y == 0):
                 st.warning("All solubilities are 0 - enter your measurements first.")
@@ -1365,14 +1376,14 @@ with col_left:
                         "vertex_values": [float(v) for v in y],
                     },
                 }
-                st.success("Apex model built. Coefficients = vertex readings.")
+                st.success("PCM built. Coefficients = vertex readings.")
     elif st.session_state.wam_mode:
         if not feas.feasible:
             st.error(
-                "Cannot build the WAM prediction: the current constraints are "
+                "Cannot build the WAM: the current constraints are "
                 "infeasible. Fix the violations listed under Step 1 first."
             )
-        elif st.button("Build WAM prediction", key="fit_wam_btn"):
+        elif st.button("Build WAM", key="fit_wam_btn"):
             S = np.array(st.session_state.wam_pure_sols, dtype=float)
             f_cs = st.session_state.cosolvent_pct / 100.0
             if np.all(S == 0):
@@ -1400,7 +1411,7 @@ with col_left:
                     },
                 }
                 st.success(
-                    f"WAM prediction built with {st.session_state.cosolvent_name} "
+                    f"WAM built with {st.session_state.cosolvent_name} "
                     f"fixed at {st.session_state.cosolvent_pct:g}% w/w."
                 )
     elif st.session_state.design_points:
@@ -1456,7 +1467,7 @@ with col_left:
         s = st.session_state.fit_result["summary"]
 
         if s["degree"] == "apex":
-            st.warning("Apex read-off (not a statistical fit)")
+            st.warning("Pseudo-Component Model (PCM) — vertex read-off, not a statistical fit")
             st.info(
                 "The linear Scheffe surface is defined by the three vertex "
                 "readings, so there are 0 residual degrees of freedom and no "
@@ -1498,7 +1509,7 @@ with col_left:
             f_cs = fr["wam_cosolvent_frac"]
             S = fr["wam_pure_sols"]
             st.info(
-                "Weighted-average prediction (mechanistic, not fitted). There "
+                "Weighted Average Model (mechanistic, not fitted). There "
                 "are no in-sample residuals; judge it in Step 5 by entering "
                 "the measured solubility of your formulations (e.g. N1–N15)."
             )
@@ -1650,7 +1661,7 @@ with col_right:
             # a control that appears to do nothing.
             if st.session_state.apex_mode:
                 st.session_state.show_apex_labels = st.checkbox(
-                    "Show apex value labels",
+                    "Show PCM vertex value labels",
                     value=st.session_state.show_apex_labels,
                     help=(
                         "Hide the ivory boxes showing each vertex's measured "

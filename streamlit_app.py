@@ -61,6 +61,7 @@ _DEFAULTS = {
     "show_legend": True,
     "show_apex_labels": True,
     "show_boundary": True,
+    "show_cosolvent_note": True,    # footnote stating the fixed co-solvent
     # ---- Validation points (Step 5) --------------------------------------
     # Kept separate from design_points/solubilities so they never affect the
     # fit or the ternary plot — they only feed the validation parity plot.
@@ -438,7 +439,8 @@ def plot_ternary(constraints, design_pts=None, fit_result=None,
                  drug="", title_color="#1f77b4", apex_mode=False,
                  show_training_points=True, show_legend=True,
                  show_apex_labels=True, show_boundary=True,
-                 cosolvent_name="", cosolvent_pct=0.0):
+                 cosolvent_name="", cosolvent_pct=0.0,
+                 show_cosolvent_note=True):
     """
     Standard mode: feasible outline + heatmap restricted to the feasible region.
     Apex mode:     heatmap over the feasible region built from the three
@@ -480,7 +482,10 @@ def plot_ternary(constraints, design_pts=None, fit_result=None,
     # footnote so the figure is unambiguous on its own.
     _style_ternary_axes(ax, constraints.names,
                         drug or "SNEDDS Solubility Prediction App", title_color)
-    if cosolvent_pct > 0:
+    # Unlike the other toggles, the footnote toggle is honoured before a
+    # fit too, so the user can switch it off on any version of the figure.
+    note_on = show_cosolvent_note and cosolvent_pct > 0
+    if note_on:
         fig.text(
             0.45, 0.015,
             f"Axes sum to 100% of the three varying components. "
@@ -607,7 +612,7 @@ def plot_ternary(constraints, design_pts=None, fit_result=None,
         handles, labels = ax.get_legend_handles_labels()
         if handles:
             ax.legend(loc="upper left", fontsize=10)
-    plt.tight_layout(rect=[0, 0.04 if cosolvent_pct > 0 else 0, 0.9, 1.0])
+    plt.tight_layout(rect=[0, 0.04 if note_on else 0, 0.9, 1.0])
     return fig
 
 
@@ -1598,8 +1603,9 @@ with col_right:
     # toggled here previously.
     with st.expander("Plot controls (fitted plot only)", expanded=False):
         st.caption(
-            "These toggles only take effect once a model has been fitted. "
-            "Before a fit, the ternary plot uses standard defaults."
+            "These toggles take effect once a model has been fitted (before "
+            "a fit the plot uses standard defaults). The co-solvent footnote "
+            "toggle applies at all times."
         )
         pc1, pc2 = st.columns(2)
         with pc1:
@@ -1613,6 +1619,14 @@ with col_right:
                 "Show design-space boundary line",
                 value=st.session_state.show_boundary,
                 help="Hide the polygon outlining the design space region.",
+            )
+            st.session_state.show_cosolvent_note = st.checkbox(
+                "Show co-solvent footnote",
+                value=st.session_state.show_cosolvent_note,
+                help=(
+                    "Hide the italic note under the plot stating the fixed "
+                    "co-solvent amount."
+                ),
             )
         with pc2:
             st.session_state.show_legend = st.checkbox(
@@ -1647,6 +1661,7 @@ with col_right:
         show_boundary=st.session_state.show_boundary,
         cosolvent_name=st.session_state.cosolvent_name,
         cosolvent_pct=st.session_state.cosolvent_pct,
+        show_cosolvent_note=st.session_state.show_cosolvent_note,
     )
     if fig is not None:
         st.pyplot(fig, use_container_width=True)

@@ -248,7 +248,7 @@ def _order_vertices_by_dominant_component(verts):
     return order
 
 
-def _style_ternary_axes(ax, names, drug, title_color):
+def _style_ternary_axes(ax, names, drug, title_color, unit="% w/w"):
     """House-style formatting: tick2 positions, dashed grid, black spines."""
     for axis_name in ("taxis", "laxis", "raxis"):
         getattr(ax, axis_name).set_ticks_position("tick2")
@@ -280,9 +280,9 @@ def _style_ternary_axes(ax, names, drug, title_color):
     # Force the grid to sit above the tripcolor surface.
     ax.set_axisbelow(False)
 
-    ax.set_tlabel(f"% w/w {names['c1']}")
-    ax.set_llabel(f"% w/w {names['c3']}")
-    ax.set_rlabel(f"% w/w {names['c2']}")
+    ax.set_tlabel(f"{unit} {names['c1']}")
+    ax.set_llabel(f"{unit} {names['c3']}")
+    ax.set_rlabel(f"{unit} {names['c2']}")
 
     ax.set_title(drug, pad=20, color=title_color, fontweight="bold")
 
@@ -437,7 +437,8 @@ def plot_parity(observed, fitted,
 def plot_ternary(constraints, design_pts=None, fit_result=None,
                  drug="", title_color="#1f77b4", apex_mode=False,
                  show_training_points=True, show_legend=True,
-                 show_apex_labels=True, show_boundary=True):
+                 show_apex_labels=True, show_boundary=True,
+                 cosolvent_name="", cosolvent_pct=0.0):
     """
     Standard mode: feasible outline + heatmap restricted to the feasible region.
     Apex mode:     heatmap over the feasible region built from the three
@@ -474,7 +475,19 @@ def plot_ternary(constraints, design_pts=None, fit_result=None,
     # still positioned by ratio, which is why the heatmap and markers looked
     # right while everything else was blank.
     ax = fig.add_subplot(111, projection="ternary", ternary_sum=100.0)
-    _style_ternary_axes(ax, constraints.names, drug or "SNEDDS Solubility Prediction App", title_color)
+    # With a fixed co-solvent the axes are % of the three-component blend,
+    # not % w/w of the whole formulation — say so on the axes and in a
+    # footnote so the figure is unambiguous on its own.
+    _style_ternary_axes(ax, constraints.names,
+                        drug or "SNEDDS Solubility Prediction App", title_color,
+                        unit="% of blend," if cosolvent_pct > 0 else "% w/w")
+    if cosolvent_pct > 0:
+        fig.text(
+            0.45, 0.015,
+            f"Axes sum to 100% of the three varying components. "
+            f"{cosolvent_name} fixed at {cosolvent_pct:g}% w/w in every formulation.",
+            ha="center", va="bottom", fontsize=9, style="italic", color="#444444",
+        )
 
     verts = constraints.vertices()
 
@@ -595,7 +608,7 @@ def plot_ternary(constraints, design_pts=None, fit_result=None,
         handles, labels = ax.get_legend_handles_labels()
         if handles:
             ax.legend(loc="upper left", fontsize=10)
-    plt.tight_layout(rect=[0, 0, 0.9, 1.0])
+    plt.tight_layout(rect=[0, 0.04 if cosolvent_pct > 0 else 0, 0.9, 1.0])
     return fig
 
 
@@ -692,38 +705,68 @@ col_left, col_right = st.columns([1.6, 1], gap="large")
 with col_left:
     # ---- Step 1: Components & Constraints ----
     st.subheader("1. Components & constraints")
-    st.caption(
-        "The three components below form the mixture design: their ranges are "
-        "% of the oil / surfactant / co-surfactant **blend**, which always sums "
-        "to 100%. A **co-solvent** (e.g. ethanol, Transcutol HP), if used, is "
-        "added at **one fixed concentration in every formulation**; the blend "
-        "makes up the remaining (100 − co-solvent)%."
-    )
-
-    # Persistent reminder of the hard limits so users see the boundary
-    # conditions BEFORE they type values, not only after they exceed them.
-    # This is a hard block, not a soft warning — bounds outside the range
-    # make the whole design infeasible and disable Suggest / Fit / Validate.
-    st.info(
-        f"**Component bounds must be between {MIN_SINGLE_COMPONENT:.0f}% "
-        f"and {MAX_SINGLE_COMPONENT:.0f}%.**"
-    )
-
     # Component inputs are LOCKED once a fit exists, because silently
     # allowing bound changes would either invalidate the plotted surface
     # (if we drop the fit_result) or create a mismatch between the plotted
-    # feasible region and the region the fit was actually done on.
+    # design space and the region the fit was actually done on.
     # A "Reset fit" button below the inputs is the only way to unlock them.
     inputs_locked = st.session_state.fit_result is not None
 
     if inputs_locked:
         st.warning(
-            "Component ranges are locked because a fit exists. "
+            "Inputs are locked because a model exists. "
             "Use **Reset fit to edit components** below to unlock them "
             "(this will clear the current fit and any validation results)."
         )
 
-    c1_col, c2_col, c3_col = st.columns(3)
+    # ---- (a) Fixed co-solvent --------------------------------------------
+    # Kept in its own box so it is visibly separate from the three varying
+    # components: it is the SAME amount in every formulation and is not an
+    # axis of the ternary plot. Suggested/entered points are still listed as
+    # full-formulation % w/w (see formulation_columns) so they can be made.
+    with st.container(border=True):
+        st.markdown(
+            "**Fixed co-solvent** — same amount in every formulation; "
+            "not shown on the ternary plot"
+        )
+        cs_col1, cs_col2 = st.columns([2, 1])
+        with cs_col1:
+            st.session_state.cosolvent_name = st.text_input(
+                "Co-solvent name",
+                value=st.session_state.cosolvent_name,
+                key="cosolvent_name_input",
+                disabled=inputs_locked,
+            )
+        with cs_col2:
+            st.session_state.cosolvent_pct = float(st.number_input(
+                "Fixed amount (% w/w)",
+                value=float(st.session_state.cosolvent_pct),
+                min_value=0.0, max_value=95.0, step=0.5,
+                key="cosolvent_pct_input",
+                disabled=inputs_locked,
+                help="% of the total formulation. Set to 0 if no co-solvent is used.",
+            ))
+        cs_pct = st.session_state.cosolvent_pct
+        if cs_pct > 0:
+            st.caption(
+                f"Every formulation = **{cs_pct:g}% {st.session_state.cosolvent_name}** "
+                f"(fixed) + **{100 - cs_pct:g}% blend** of the three components below."
+            )
+        else:
+            st.caption("No co-solvent: the three components below make up the whole formulation.")
+
+    # ---- (b) Varying components (the ternary axes) ------------------------
+    comp_box = st.container(border=True)
+    with comp_box:
+        st.markdown(
+            "**Varying components** — % of the blend, always summing to 100%. "
+            "These are the three axes of the ternary plot."
+        )
+        st.caption(
+            f"Each min/max must be between {MIN_SINGLE_COMPONENT:.0f}% and "
+            f"{MAX_SINGLE_COMPONENT:.0f}% of the blend."
+        )
+    c1_col, c2_col, c3_col = comp_box.columns(3)
     for idx, col in enumerate((c1_col, c2_col, c3_col)):
         with col:
             st.session_state.comp_names[idx] = st.text_input(
@@ -733,7 +776,7 @@ with col_left:
                 disabled=inputs_locked,
             )
             st.session_state.comp_mins[idx] = st.number_input(
-                f"C{idx+1} min (%)",
+                "Min (% of blend)",
                 value=float(st.session_state.comp_mins[idx]),
                 min_value=0.0, max_value=100.0, step=1.0,
                 key=f"min_{idx}",
@@ -744,7 +787,7 @@ with col_left:
                 ),
             )
             st.session_state.comp_maxs[idx] = st.number_input(
-                f"C{idx+1} max (%)",
+                "Max (% of blend)",
                 value=float(st.session_state.comp_maxs[idx]),
                 min_value=0.0, max_value=100.0, step=1.0,
                 key=f"max_{idx}",
@@ -785,39 +828,6 @@ with col_left:
                 notes.append(":green[inside allowed range]")
             for n in notes:
                 st.caption(n)
-
-    # ---- Fixed co-solvent (all modes) ------------------------------------
-    # Held constant across the whole design space. It does not change the
-    # ternary geometry, but it IS part of every formulation someone has to
-    # make, so suggested/entered points are also listed as full-formulation
-    # % w/w (see formulation_columns). Locked with the components once a
-    # model exists, because the measured solubilities depend on it.
-    cs_col1, cs_col2 = st.columns([2, 1])
-    with cs_col1:
-        st.session_state.cosolvent_name = st.text_input(
-            "Co-solvent name",
-            value=st.session_state.cosolvent_name,
-            key="cosolvent_name_input",
-            disabled=inputs_locked,
-        )
-    with cs_col2:
-        st.session_state.cosolvent_pct = float(st.number_input(
-            "Co-solvent (% w/w, fixed)",
-            value=float(st.session_state.cosolvent_pct),
-            min_value=0.0, max_value=95.0, step=0.5,
-            key="cosolvent_pct_input",
-            disabled=inputs_locked,
-            help=(
-                "Percentage of the TOTAL formulation, identical in every run. "
-                "Set to 0 if no co-solvent is used."
-            ),
-        ))
-    if st.session_state.cosolvent_pct > 0:
-        st.caption(
-            f"Every formulation contains {st.session_state.cosolvent_pct:g}% w/w "
-            f"{st.session_state.cosolvent_name}; the blend is the other "
-            f"{100 - st.session_state.cosolvent_pct:g}%."
-        )
 
     # ---- Reset-fit button (visible only when inputs are locked) ----------
     # Clears fit_result + validation so bounds become editable again. Design
@@ -1635,6 +1645,8 @@ with col_right:
         show_legend=st.session_state.show_legend,
         show_apex_labels=st.session_state.show_apex_labels,
         show_boundary=st.session_state.show_boundary,
+        cosolvent_name=st.session_state.cosolvent_name,
+        cosolvent_pct=st.session_state.cosolvent_pct,
     )
     if fig is not None:
         st.pyplot(fig, use_container_width=True)

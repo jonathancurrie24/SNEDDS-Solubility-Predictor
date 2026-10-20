@@ -734,7 +734,8 @@ with col_left:
                 "Co-solvent name",
                 value=st.session_state.cosolvent_name,
                 key="cosolvent_name_input",
-                disabled=inputs_locked,
+                # Name is a label only (no effect on any numbers), so it stays
+                # editable even when a fit exists; only the amount is locked.
             )
         with cs_col2:
             st.session_state.cosolvent_pct = float(st.number_input(

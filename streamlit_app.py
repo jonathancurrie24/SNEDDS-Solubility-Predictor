@@ -44,6 +44,16 @@ _DEFAULTS = {
     "fit_result": None,
     "manual_mode": False,
     "apex_mode": False,
+    # ---- Weighted-average mixing (WAM) module ----------------------------
+    # Mechanistic prediction: S_mix = sum_i w_i * S_i over oil, surfactant,
+    # co-surfactant and a co-solvent held at ONE fixed fraction everywhere
+    # in the design space. Mutually exclusive with apex mode.
+    "wam_mode": False,
+    "apex_toggle": False,           # widget keys for the two mode toggles
+    "wam_toggle": False,
+    "cosolvent_name": "Co-solvent",
+    "cosolvent_pct": 10.0,          # % w/w of the total formulation, fixed
+    "wam_pure_sols": [0.0, 0.0, 0.0, 0.0],  # S_i in pure c1, c2, c3, co-solvent (mg/g)
     "drug_name": "Drug",
     "title_color": "#1f77b4",
     # ---- Ternary plot element toggles (Step "Plot controls") --------------
@@ -81,6 +91,7 @@ _MODEL_DISPLAY = {
     "quadratic": "Quadratic Scheffé",
     "special_cubic": "Special-cubic Scheffé",
     "apex": "Apex read-off",
+    "wam": "Weighted average (WAM)",
 }
 
 
@@ -120,6 +131,44 @@ def _apex_predict(points: np.ndarray, vertices, readings) -> np.ndarray:
     return W @ y                                                # (N,)
 
 
+def wam_effective_coefficients(pure_sols, cosolvent_frac) -> np.ndarray:
+    """
+    Collapse the 4-excipient WAM onto the 3-component ternary.
+
+    The ternary coordinates x_i (summing to 100) describe the oil /
+    surfactant / co-surfactant blend EXCLUDING the co-solvent. With the
+    co-solvent fixed at weight fraction f, each component's weight
+    fraction in the whole formulation is w_i = (1 - f) * x_i / 100, so
+
+        S_mix = sum_i (1 - f) * (x_i/100) * S_i  +  f * S_cs
+              = sum_i (x_i/100) * [ (1 - f) * S_i + f * S_cs ]
+
+    (the second line uses sum_i x_i/100 = 1). The bracket is therefore an
+    exact linear-Scheffé coefficient — the WAM surface is a plane over
+    the design space.
+    """
+    S = np.asarray(pure_sols, dtype=float)
+    f = float(cosolvent_frac)
+    return (1.0 - f) * S[:3] + f * S[3]
+
+
+def _wam_predict(points, pure_sols, cosolvent_frac) -> np.ndarray:
+    """
+    Equation 1: S_mix = sum_i w_i * S_i over the four excipients.
+
+    points:         (N, 3) ternary compositions (c1, c2, c3) summing to 100,
+                    i.e. % of the blend excluding the co-solvent.
+    pure_sols:      [S_c1, S_c2, S_c3, S_cosolvent] in mg/g.
+    cosolvent_frac: fixed co-solvent weight fraction (0-1) of the total
+                    formulation, identical at every point in the space.
+    """
+    P = np.atleast_2d(np.asarray(points, dtype=float))
+    S = np.asarray(pure_sols, dtype=float)
+    f = float(cosolvent_frac)
+    w = (1.0 - f) * P / P.sum(axis=1, keepdims=True)   # (N, 3) weight fractions
+    return w @ S[:3] + f * S[3]
+
+
 def predict_from_fit(points, fit_result) -> np.ndarray:
     """
     Predict solubility at arbitrary compositions using a stored fit_result.
@@ -131,6 +180,9 @@ def predict_from_fit(points, fit_result) -> np.ndarray:
     ever re-touching the training data.
     """
     points = np.atleast_2d(np.asarray(points, dtype=float))
+    if fit_result["degree"] == "wam":
+        return _wam_predict(points, fit_result["wam_pure_sols"],
+                            fit_result["wam_cosolvent_frac"])
     if fit_result["degree"] == "apex":
         V = np.array(fit_result["apex_vertices"], dtype=float)
         y = np.array(fit_result["apex_readings"], dtype=float)
@@ -252,6 +304,9 @@ def plot_parity(observed, fitted,
     val_obs = np.asarray(val_observed, dtype=float) if val_observed is not None else None
     val_pred = np.asarray(val_predicted, dtype=float) if val_predicted is not None else None
     have_val = val_obs is not None and val_pred is not None and len(val_obs) > 0
+    # WAM predictions are not fitted to anything, so there is no in-sample
+    # set — only the validation (measured formulation) points are plotted.
+    have_train = len(observed) > 0
 
     # Compact size: the parity plot no longer dominates the diagnostics
     # panel; it sits alongside the R^2 / Adj R^2 tiles at a reasonable
@@ -260,7 +315,7 @@ def plot_parity(observed, fitted,
     fig, ax = plt.subplots(figsize=(4.5, 4.5))
 
     # square axes around all data (training + validation)
-    stack = [observed, fitted]
+    stack = [observed, fitted] if have_train else []
     if have_val:
         stack.extend([val_obs, val_pred])
     all_vals = np.concatenate(stack)
@@ -276,35 +331,40 @@ def plot_parity(observed, fitted,
     in_sample_label = "In-sample fit"
     if model_label:
         in_sample_label = f"In-sample fit ({model_label})"
-    ax.scatter(
-        observed, fitted,
-        marker="s", facecolors="none", edgecolors=color,
-        s=70, linewidths=1.5, zorder=4,
-        label=in_sample_label,
-    )
+    if have_train:
+        ax.scatter(
+            observed, fitted,
+            marker="s", facecolors="none", edgecolors=color,
+            s=70, linewidths=1.5, zorder=4,
+            label=in_sample_label,
+        )
     if have_val:
+        val_label = "Validation"
+        if not have_train and model_label:
+            val_label = f"Measured vs {model_label}"
         ax.scatter(
             val_obs, val_pred,
             marker="^", color="#d62728",
             s=110, edgecolors="white", linewidths=1.5, zorder=6,
-            label="Validation",
+            label=val_label,
         )
 
     # in-sample metrics
-    resid = observed - fitted
-    mae = float(np.mean(np.abs(resid)))
-    rmse = float(np.sqrt(np.mean(resid ** 2)))
-    ss_res = float(np.sum(resid ** 2))
-    ss_tot = float(np.sum((observed - observed.mean()) ** 2))
-    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
+    if have_train:
+        resid = observed - fitted
+        mae = float(np.mean(np.abs(resid)))
+        rmse = float(np.sqrt(np.mean(resid ** 2)))
+        ss_res = float(np.sum(resid ** 2))
+        ss_tot = float(np.sum((observed - observed.mean()) ** 2))
+        r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float("nan")
 
-    lines = [f"MAE   {mae:.2f}", f"RMSE  {rmse:.2f}", f"R²    {r2:.3f}"]
-    props = dict(boxstyle="round", facecolor="white", alpha=0.85, edgecolor="gray")
-    ax.text(
-        0.05, 0.95, "\n".join(lines),
-        transform=ax.transAxes, fontsize=9, family="monospace",
-        verticalalignment="top", bbox=props, zorder=7,
-    )
+        lines = [f"MAE   {mae:.2f}", f"RMSE  {rmse:.2f}", f"R²    {r2:.3f}"]
+        props = dict(boxstyle="round", facecolor="white", alpha=0.85, edgecolor="gray")
+        ax.text(
+            0.05, 0.95, "\n".join(lines),
+            transform=ax.transAxes, fontsize=9, family="monospace",
+            verticalalignment="top", bbox=props, zorder=7,
+        )
 
     # validation metrics (separate box so it's obvious which set they came from)
     if have_val:
@@ -336,8 +396,9 @@ def plot_parity(observed, fitted,
     plot_title = f"{title} — {drug}" if drug else title
     ax.set_title(plot_title, color=color, fontweight="bold", pad=8, fontsize=11)
     ax.grid(True, alpha=0.5)
-    ax.legend(loc="lower right" if not have_val else "upper right",
-              frameon=True, fontsize=8)
+    if have_train or have_val:
+        ax.legend(loc="lower right" if not have_val else "upper right",
+                  frameon=True, fontsize=8)
     # Frame the plot in the user's chosen title color with a dashed line,
     # so the parity view visually rhymes with the plot title and the
     # ternary title bar rather than defaulting to an unrelated black
@@ -402,7 +463,12 @@ def plot_ternary(constraints, design_pts=None, fit_result=None,
         coef = np.array([coef_dict[i] for i in sorted(coef_dict)])
         deg = fit_result["degree"]
 
-        if deg == "apex":
+        if deg == "wam":
+            # Mechanistic weighted average (Equation 1) evaluated over the
+            # feasible region with the co-solvent at its fixed fraction.
+            grid_pts = feasible_grid(constraints, step=2.0)
+            preds = predict_from_fit(grid_pts, fit_result) if len(grid_pts) else np.array([])
+        elif deg == "apex":
             # Barycentric interpolation w.r.t. the three feasible-triangle
             # vertices. The previous formula (grid/100) @ coef treated the
             # ORIGINAL components as pseudo-components — which is only correct
@@ -519,11 +585,23 @@ st.markdown("## △ SNEDDS Solubility Prediction App")
 st.markdown("Design, sample, and model a three-component formulation space.")
 
 # ---- Top-of-page mode toggle ---------------------------------------------
-mode_col1, mode_col2 = st.columns([1, 3])
+def _on_apex_toggle():
+    # Apex and WAM are alternative prediction approaches — only one at a time.
+    if st.session_state.apex_toggle:
+        st.session_state.wam_toggle = False
+
+
+def _on_wam_toggle():
+    if st.session_state.wam_toggle:
+        st.session_state.apex_toggle = False
+
+
+mode_col1, mode_col1b, mode_col2 = st.columns([1, 1, 2])
 with mode_col1:
-    st.session_state.apex_mode = st.toggle(
+    st.toggle(
         "Apex prediction mode",
-        value=st.session_state.apex_mode,
+        key="apex_toggle",
+        on_change=_on_apex_toggle,
         help=(
             "Uses the 3 vertices of the feasible region as pseudo-components. "
             "Coefficients are read directly from the observations at those "
@@ -532,12 +610,43 @@ with mode_col1:
             "the feasible region to be an equilateral triangle."
         ),
     )
+with mode_col1b:
+    st.toggle(
+        "Weighted-average (WAM) mode",
+        key="wam_toggle",
+        on_change=_on_wam_toggle,
+        help=(
+            "Mechanistic prediction with no fitting: S_mix = Σ wᵢ·Sᵢ, using "
+            "the measured solubility of the drug in each pure excipient (oil, "
+            "surfactant, co-surfactant, co-solvent) and each excipient's "
+            "weight fraction. The co-solvent is fixed at one concentration "
+            "across the whole design space."
+        ),
+    )
+st.session_state.apex_mode = st.session_state.apex_toggle
+st.session_state.wam_mode = st.session_state.wam_toggle
 with mode_col2:
     if st.session_state.apex_mode:
         st.caption(
             "Apex mode active: the design is the 3 vertices, the fit is the "
             "linear Scheffe read-off, and the plot covers the feasible region."
         )
+    elif st.session_state.wam_mode:
+        st.caption(
+            "WAM mode active: predictions come from pure-excipient "
+            "solubilities and weight fractions (Equation 1) — no design "
+            "points or fitting. Compare against measured formulations in "
+            "Step 5."
+        )
+
+# Switching prediction approach invalidates whatever model is on screen
+# (an apex read-off or a Scheffé fit means nothing in WAM mode and vice
+# versa). Validation compositions/measurements are KEPT so the same
+# measured formulations can be scored against each approach in turn.
+_mode_sig = (st.session_state.apex_mode, st.session_state.wam_mode)
+if "_last_mode" in st.session_state and st.session_state._last_mode != _mode_sig:
+    st.session_state.fit_result = None
+st.session_state._last_mode = _mode_sig
 
 # ---- Detect config changes that should invalidate stale state ------------
 _cfg_signature = (
@@ -847,6 +956,86 @@ with col_left:
         else:
             st.info("Waiting for a valid equilateral triangle above.")
 
+    elif st.session_state.wam_mode:
+        # =============== WAM MODE ===============
+        cnames = st.session_state.comp_names
+        st.caption(
+            "No design points are needed. Enter the solubility of the drug in "
+            "each **pure** excipient; the predicted solubility of any blend is "
+            "the weight-fraction-weighted sum (Equation 1). The ternary axes "
+            "describe the blend **excluding** the co-solvent, which is held at "
+            "one fixed concentration across the whole design space."
+        )
+
+        cs1, cs2 = st.columns([1.4, 1])
+        with cs1:
+            st.session_state.cosolvent_name = st.text_input(
+                "Co-solvent name",
+                value=st.session_state.cosolvent_name,
+                key="cosolvent_name_input",
+            )
+        with cs2:
+            new_pct = st.number_input(
+                "Co-solvent (% w/w, fixed)",
+                value=float(st.session_state.cosolvent_pct),
+                min_value=0.0, max_value=95.0, step=0.5,
+                key="cosolvent_pct_input",
+                help=(
+                    "Percentage of the TOTAL formulation. Identical for every "
+                    "composition in the design space; the three ternary "
+                    "components share the remaining (100 − this)%."
+                ),
+            )
+        f_cs = new_pct / 100.0
+        st.latex(
+            r"S_{mix} = \sum_{i} w_i S_i,\qquad "
+            r"w_i = (1 - w_{cs})\,\frac{x_i}{100},\quad "
+            rf"w_{{cs}} = {f_cs:.3f}\ \text{{(fixed)}}"
+        )
+
+        # Weight-fraction span of each component across the feasible region,
+        # in the WHOLE formulation (so the table reads like Figure 1's wᵢ).
+        wam_rows = []
+        for i in range(3):
+            r_lo, r_hi = feas.reachable[("c1", "c2", "c3")[i]] if feas.feasible else (
+                st.session_state.comp_mins[i], st.session_state.comp_maxs[i])
+            wam_rows.append({
+                "Excipient": cnames[i],
+                "Role": f"Component {i+1}",
+                "wᵢ across design space": (
+                    f"{(1 - f_cs) * r_lo / 100:.3f} – {(1 - f_cs) * r_hi / 100:.3f}"
+                ),
+                "Sᵢ in pure excipient (mg/g)": float(st.session_state.wam_pure_sols[i]),
+            })
+        wam_rows.append({
+            "Excipient": st.session_state.cosolvent_name,
+            "Role": "Co-solvent (fixed)",
+            "wᵢ across design space": f"{f_cs:.3f} (fixed)",
+            "Sᵢ in pure excipient (mg/g)": float(st.session_state.wam_pure_sols[3]),
+        })
+        wam_edited = st.data_editor(
+            pd.DataFrame(wam_rows),
+            use_container_width=True,
+            num_rows="fixed",
+            hide_index=True,
+            key="wam_editor",
+            disabled=["Excipient", "Role", "wᵢ across design space"],
+            column_config={
+                "Sᵢ in pure excipient (mg/g)": st.column_config.NumberColumn(
+                    min_value=0.0, step=0.1, format="%.2f"),
+            },
+        )
+        new_wam_sols = [float(x) for x in wam_edited["Sᵢ in pure excipient (mg/g)"].tolist()]
+        # Only drop the WAM prediction when an input actually changed, so
+        # unrelated reruns (plot toggles, title edits) don't wipe it.
+        if (new_wam_sols != list(st.session_state.wam_pure_sols)
+                or new_pct != st.session_state.cosolvent_pct):
+            st.session_state.wam_pure_sols = new_wam_sols
+            st.session_state.cosolvent_pct = float(new_pct)
+            if (st.session_state.fit_result is not None
+                    and st.session_state.fit_result["degree"] == "wam"):
+                st.session_state.fit_result = None
+
     else:
         # =============== NON-APEX MODES ===============
         st.session_state.manual_mode = st.toggle(
@@ -1113,6 +1302,43 @@ with col_left:
                     },
                 }
                 st.success("Apex model built. Coefficients = vertex readings.")
+    elif st.session_state.wam_mode:
+        if not feas.feasible:
+            st.error(
+                "Cannot build the WAM prediction: the current constraints are "
+                "infeasible. Fix the violations listed under Step 1 first."
+            )
+        elif st.button("Build WAM prediction", key="fit_wam_btn"):
+            S = np.array(st.session_state.wam_pure_sols, dtype=float)
+            f_cs = st.session_state.cosolvent_pct / 100.0
+            if np.all(S == 0):
+                st.warning("All pure-excipient solubilities are 0 - enter your measurements first.")
+            elif np.any(S < 0):
+                st.error("Solubilities cannot be negative.")
+            else:
+                b = wam_effective_coefficients(S, f_cs)
+                st.session_state.fit_result = {
+                    "coef": {i: float(b[i]) for i in range(3)},
+                    "degree": "wam",
+                    "wam_pure_sols": [float(v) for v in S],
+                    "wam_cosolvent_frac": float(f_cs),
+                    "summary": {
+                        "degree": "wam",
+                        "n_points": 0,
+                        "n_terms": 4,
+                        "residual_df": 0,
+                        "coefficients": {i: float(b[i]) for i in range(3)},
+                        "r2": float("nan"),
+                        "adj_r2": float("nan"),
+                        "observed": [],
+                        "fitted_values": [],
+                        "trustworthy": False,
+                    },
+                }
+                st.success(
+                    f"WAM prediction built with {st.session_state.cosolvent_name} "
+                    f"fixed at {st.session_state.cosolvent_pct:g}% w/w."
+                )
     elif st.session_state.design_points:
         # Gate on feasibility: an out-of-range bound (or any other infeasible
         # configuration) makes the design box the fit sits inside meaningless,
@@ -1203,6 +1429,42 @@ with col_left:
                         ),
                         use_container_width=False,
                     )
+        elif s["degree"] == "wam":
+            fr = st.session_state.fit_result
+            f_cs = fr["wam_cosolvent_frac"]
+            S = fr["wam_pure_sols"]
+            st.info(
+                "Weighted-average prediction (mechanistic, not fitted). There "
+                "are no in-sample residuals; judge it in Step 5 by entering "
+                "the measured solubility of your formulations (e.g. N1–N15)."
+            )
+            cnames = list(st.session_state.comp_names)
+            excipients = cnames + [st.session_state.cosolvent_name]
+            st.table(pd.DataFrame([
+                {
+                    "Excipient": excipients[i],
+                    "Sᵢ (mg/g)": f"{S[i]:.2f}",
+                    "wᵢ": (f"{f_cs:.3f} (fixed)" if i == 3
+                           else f"(1 − {f_cs:.3f})·x{i+1}/100"),
+                }
+                for i in range(4)
+            ]))
+            b = [fr["coef"][i] for i in range(3)]
+            st.code(
+                "Equivalent linear surface (x = fraction of blend excl. co-solvent):\n"
+                "S_mix = " + " + ".join(f"{bi:.2f}·x({n})" for bi, n in zip(b, cnames)),
+                language="text",
+            )
+            grid = feasible_grid(constraints, step=1.0)
+            if len(grid):
+                preds = predict_from_fit(grid, fr)
+                i_lo, i_hi = int(np.argmin(preds)), int(np.argmax(preds))
+                fmt = lambda p: ", ".join(f"{n} {v:.0f}%" for n, v in zip(cnames, p))
+                m1, m2 = st.columns(2)
+                m1.metric("Predicted min (mg/g)", f"{preds[i_lo]:.2f}")
+                m1.caption(fmt(grid[i_lo]))
+                m2.metric("Predicted max (mg/g)", f"{preds[i_hi]:.2f}")
+                m2.caption(fmt(grid[i_hi]))
         else:
             # LOO has been removed from the summary because at the design
             # sizes this app targets (n ≈ 4-8, p ≥ 3) a refit on n-1 points
@@ -1293,11 +1555,12 @@ with col_right:
         )
         pc1, pc2 = st.columns(2)
         with pc1:
-            st.session_state.show_training_points = st.checkbox(
-                "Show training / design points",
-                value=st.session_state.show_training_points,
-                help="Hide the black-outlined circles marking each experiment.",
-            )
+            if not st.session_state.wam_mode:
+                st.session_state.show_training_points = st.checkbox(
+                    "Show training / design points",
+                    value=st.session_state.show_training_points,
+                    help="Hide the black-outlined circles marking each experiment.",
+                )
             st.session_state.show_boundary = st.checkbox(
                 "Show design-space boundary line",
                 value=st.session_state.show_boundary,
@@ -1324,7 +1587,8 @@ with col_right:
 
     fig = plot_ternary(
         constraints,
-        design_pts=st.session_state.design_points or None,
+        design_pts=(None if st.session_state.wam_mode
+                    else st.session_state.design_points or None),
         fit_result=st.session_state.fit_result,
         drug=st.session_state.drug_name,
         title_color=st.session_state.title_color,
@@ -1365,6 +1629,13 @@ else:
         "region to score against the model. Predictions come from the "
         "current fit; the ternary plot is unaffected."
     )
+    if st.session_state.fit_result["degree"] == "wam":
+        st.caption(
+            f"WAM mode: enter each formulation's ternary composition (blend "
+            f"excluding {st.session_state.cosolvent_name}) and its measured "
+            f"solubility. {st.session_state.cosolvent_name} is taken as "
+            f"{st.session_state.cosolvent_pct:g}% w/w in every formulation."
+        )
 
     n_val = st.number_input(
         "Number of validation points",
@@ -1500,6 +1771,21 @@ else:
                 vm4.metric(
                     "Val R²",
                     f"{v_r2:.3f}" if np.isfinite(v_r2) else "n/a",
+                )
+                # Per-formulation breakdown (measured vs predicted).
+                run_ids = [f"V{i+1}" for i in np.flatnonzero(mask)]
+                st.dataframe(
+                    pd.DataFrame({
+                        "Run": run_ids,
+                        cnames[0]: X_use[:, 0],
+                        cnames[1]: X_use[:, 1],
+                        cnames[2]: X_use[:, 2],
+                        "Measured (mg/g)": y_use,
+                        "Predicted (mg/g)": np.round(y_pred, 2),
+                        "Residual (mg/g)": np.round(y_use - y_pred, 2),
+                    }),
+                    use_container_width=True,
+                    hide_index=True,
                 )
     else:
         st.caption("Set the number of validation points above to begin.")

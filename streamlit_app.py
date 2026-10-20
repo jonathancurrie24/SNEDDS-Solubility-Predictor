@@ -808,6 +808,17 @@ with col_left:
             # these captions describe the state without adding a second
             # (potentially conflicting) warning voice.
             lo, hi = st.session_state.comp_mins[idx], st.session_state.comp_maxs[idx]
+
+            # Indicator: the same range expressed in the FULL formulation,
+            # i.e. after the fixed co-solvent takes its share. Updates live
+            # with the co-solvent amount and name.
+            if st.session_state.cosolvent_pct > 0:
+                scale = (100.0 - st.session_state.cosolvent_pct) / 100.0
+                st.markdown(
+                    f":blue-background[In full formulation: "
+                    f"**{lo * scale:.1f}–{hi * scale:.1f}% w/w**]"
+                )
+
             notes = []
             if lo > hi:
                 notes.append(f":red[min ({lo:.0f}%) exceeds max ({hi:.0f}%)]")
